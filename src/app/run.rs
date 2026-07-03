@@ -4,9 +4,8 @@ use std::process::ExitCode;
 use anyhow::{bail, Result};
 use clap::Parser;
 
-use super::cli::{
-    Cli, Command, ConvertArgs, EmitDdlArgs, InitExampleArgs, InspectSchemaArgs, ValidateArgs,
-};
+use super::cli::{Cli, Command, EmitDdlArgs, InitExampleArgs, InspectSchemaArgs, ValidateArgs};
+use super::interactive::{complete_convert_options, ConvertOptions};
 
 /// Runs the CorrodeQL command-line application.
 pub fn run() -> ExitCode {
@@ -28,22 +27,28 @@ where
     let cli = Cli::parse_from(args);
 
     match cli.command {
-        Command::Convert(args) => run_convert(args),
-        Command::InspectSchema(args) => run_inspect_schema(args),
-        Command::EmitDdl(args) => run_emit_ddl(args),
-        Command::Validate(args) => run_validate(args),
-        Command::InitExample(args) => run_init_example(args),
+        Some(Command::Convert(args)) => run_convert(args),
+        Some(Command::InspectSchema(args)) => run_inspect_schema(args),
+        Some(Command::EmitDdl(args)) => run_emit_ddl(args),
+        Some(Command::Validate(args)) => run_validate(args),
+        Some(Command::InitExample(args)) => run_init_example(args),
+        None => run_convert(Default::default()),
     }
 }
 
 /// Placeholder implementation for `corrodeql convert`.
-pub fn run_convert(args: ConvertArgs) -> Result<()> {
-    validate_schema_path(args.schema.as_deref())?;
-    validate_data_dir(args.data_dir.as_deref())?;
-    validate_output_parent(args.out.as_deref())?;
-    validate_output_parent(args.emit_ddl.as_deref())?;
+pub fn run_convert(args: super::cli::ConvertArgs) -> Result<()> {
+    let options = complete_convert_options(args)?;
+    run_convert_with_options(options)
+}
 
-    if args.dry_run {
+fn run_convert_with_options(options: ConvertOptions) -> Result<()> {
+    validate_schema_path(Some(options.schema.as_path()))?;
+    validate_data_dir(Some(options.data_dir.as_path()))?;
+    validate_output_parent(Some(options.out.as_path()))?;
+    validate_output_parent(options.emit_ddl.as_deref())?;
+
+    if options.dry_run {
         println!("convert dry run: arguments parsed and obvious paths validated");
     } else {
         println!("convert is not yet implemented; no conversion was attempted");

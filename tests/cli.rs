@@ -44,7 +44,7 @@ fn full_convert_arguments_parse() {
     ])
     .expect("full convert args should parse");
 
-    let Command::Convert(args) = cli.command else {
+    let Some(Command::Convert(args)) = cli.command else {
         panic!("expected convert command");
     };
 
@@ -76,7 +76,7 @@ fn convert_can_parse_without_paths_for_interactive_prompting() {
     let cli =
         Cli::try_parse_from(["corrodeql", "convert"]).expect("paths are optional at parse time");
 
-    let Command::Convert(args) = cli.command else {
+    let Some(Command::Convert(args)) = cli.command else {
         panic!("expected convert command");
     };
 
