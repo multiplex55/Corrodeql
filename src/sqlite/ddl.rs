@@ -22,6 +22,16 @@ pub struct GeneratedDdl {
 
 /// Generates deterministic SQLite DDL from the parsed SQL Server schema.
 pub fn generate(schema: &DatabaseSchema, options: &ConvertOptions) -> Result<GeneratedDdl> {
+    let mut generated = generate_tables(schema, options)?;
+    let mut indexes = generate_indexes(schema, options)?;
+    generated.statements.append(&mut indexes.statements);
+    generated.diagnostics.append(&mut indexes.diagnostics);
+    Ok(generated)
+}
+
+/// Generates only table DDL. Indexes are intentionally omitted so imports can
+/// load data before creating secondary indexes.
+pub fn generate_tables(schema: &DatabaseSchema, options: &ConvertOptions) -> Result<GeneratedDdl> {
     let table_names = table_names_for_schema(schema, options.table_name_mode)?;
     let mut generated = GeneratedDdl::default();
 
@@ -32,6 +42,14 @@ pub fn generate(schema: &DatabaseSchema, options: &ConvertOptions) -> Result<Gen
             &mut generated.diagnostics,
         ));
     }
+
+    Ok(generated)
+}
+
+/// Generates only index DDL. Call this after data import for faster loads.
+pub fn generate_indexes(schema: &DatabaseSchema, options: &ConvertOptions) -> Result<GeneratedDdl> {
+    let table_names = table_names_for_schema(schema, options.table_name_mode)?;
+    let mut generated = GeneratedDdl::default();
 
     for index in &schema.indexes {
         if let Some(statement) = index_statement(index, &table_names, &mut generated.diagnostics) {
@@ -243,22 +261,27 @@ fn index_statement(
         )));
         return None;
     }
-    if index.filter.is_some() {
-        diagnostics.push(unsupported(format!(
-            "filtered index {} was not emitted because SQL Server filter expressions are not yet safely portable",
-            index.name
-        )));
-        return None;
-    }
     warn_clustered(index.clustered, diagnostics, "index", &index.table);
     let table_name = table_names.get(&index.table)?;
-    Some(Statement(format!(
+    let mut sql = format!(
         "CREATE {}INDEX {} ON {} ({});",
         if index.unique { "UNIQUE " } else { "" },
         quote_identifier(&index.name),
         quote_identifier(&table_name.0),
         quote_column_list(&index.columns)
-    )))
+    );
+    if let Some(filter) = index
+        .filter
+        .as_deref()
+        .map(str::trim)
+        .filter(|f| !f.is_empty())
+    {
+        sql.pop();
+        sql.push_str(" WHERE ");
+        sql.push_str(filter);
+        sql.push(';');
+    }
+    Some(Statement(sql))
 }
 
 fn quote_column_list(columns: &[String]) -> String {
@@ -489,6 +512,90 @@ mod tests {
             .statements[1]
                 .0,
             "CREATE INDEX \"IX Customer Name\" ON \"dbo_Customer\" (\"Name\");"
+        );
+    }
+
+    #[test]
+    fn unique_index_ddl() {
+        let t = table(
+            "dbo",
+            "Customer",
+            vec![col("Email", SqlServerType::Text, true)],
+        );
+        let index = IndexDef {
+            name: "UX_Customer_Email".into(),
+            table: t.name.clone(),
+            columns: vec!["Email".into()],
+            unique: true,
+            clustered: None,
+            filter: None,
+        };
+        assert_eq!(
+            ddl(DatabaseSchema {
+                tables: vec![t],
+                indexes: vec![index],
+                diagnostics: vec![],
+                statement_summary: Default::default(),
+            })
+            .statements[1]
+                .0,
+            "CREATE UNIQUE INDEX \"UX_Customer_Email\" ON \"dbo_Customer\" (\"Email\");"
+        );
+    }
+
+    #[test]
+    fn filtered_index_ddl_uses_sqlite_partial_index() {
+        let t = table(
+            "dbo",
+            "Order",
+            vec![col("Status", SqlServerType::Text, true)],
+        );
+        let index = IndexDef {
+            name: "IX_Order_Open".into(),
+            table: t.name.clone(),
+            columns: vec!["Status".into()],
+            unique: false,
+            clustered: None,
+            filter: Some("Status = 'Open'".into()),
+        };
+        assert_eq!(
+            ddl(DatabaseSchema {
+                tables: vec![t],
+                indexes: vec![index],
+                diagnostics: vec![],
+                statement_summary: Default::default(),
+            })
+            .statements[1]
+                .0,
+            "CREATE INDEX \"IX_Order_Open\" ON \"dbo_Order\" (\"Status\") WHERE Status = 'Open';"
+        );
+    }
+
+    #[test]
+    fn generated_index_sql_quotes_identifiers() {
+        let t = table(
+            "sales",
+            "Order Detail",
+            vec![col("Customer \"Id\"", SqlServerType::Int, true)],
+        );
+        let index = IndexDef {
+            name: "IX \"odd\"".into(),
+            table: t.name.clone(),
+            columns: vec!["Customer \"Id\"".into()],
+            unique: false,
+            clustered: None,
+            filter: None,
+        };
+        assert_eq!(
+            ddl(DatabaseSchema {
+                tables: vec![t],
+                indexes: vec![index],
+                diagnostics: vec![],
+                statement_summary: Default::default(),
+            })
+            .statements[1]
+                .0,
+            "CREATE INDEX \"IX \"\"odd\"\"\" ON \"sales_Order Detail\" (\"Customer \"\"Id\"\"\");"
         );
     }
 

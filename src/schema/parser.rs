@@ -251,15 +251,97 @@ impl Parser {
         }
         let table = self.parse_table_name()?;
         let columns = self.parse_column_list().unwrap_or_default();
-        self.skip_stmt_tail();
+        let filter = self.parse_index_tail(&name);
         Some(IndexDef {
             name,
             table,
             columns,
             unique,
             clustered,
-            filter: None,
+            filter,
         })
+    }
+
+    fn parse_index_tail(&mut self, index_name: &str) -> Option<String> {
+        let mut filter = None;
+        while !self.is_eof() && !self.consume_sym(';') {
+            if self.consume_kw(Keyword::Include) {
+                self.unsupported(&format!(
+                    "unsupported INCLUDE columns on index {index_name} were ignored"
+                ));
+                self.skip_balanced_parentheses();
+            } else if self.consume_kw(Keyword::With) {
+                self.unsupported(&format!(
+                    "unsupported WITH options on index {index_name} were ignored"
+                ));
+                self.skip_balanced_parentheses();
+            } else if self.consume_kw(Keyword::On) {
+                self.unsupported(&format!(
+                    "unsupported filegroup option on index {index_name} was ignored"
+                ));
+                self.skip_filegroup_option();
+            } else if self.consume_kw(Keyword::Where) {
+                filter = Some(self.collect_index_filter_expr());
+            } else if matches!(self.peek().kind, TokenKind::Keyword(Keyword::Create)) {
+                break;
+            } else {
+                self.advance();
+            }
+        }
+        filter.filter(|expression| !expression.trim().is_empty())
+    }
+
+    fn collect_index_filter_expr(&mut self) -> String {
+        let mut s = String::new();
+        let mut depth = 0i32;
+        while !self.is_eof() {
+            if depth == 0
+                && (self.at_sym(';')
+                    || self.peek_is_kw(Keyword::Include)
+                    || self.peek_is_kw(Keyword::With)
+                    || self.peek_is_kw(Keyword::On))
+            {
+                break;
+            }
+            if self.at_sym('(') {
+                depth += 1;
+            } else if self.at_sym(')') && depth > 0 {
+                depth -= 1;
+            }
+            append_expr_token(&mut s, self.advance());
+        }
+        s.trim().to_owned()
+    }
+
+    fn skip_balanced_parentheses(&mut self) {
+        if !self.consume_sym('(') {
+            return;
+        }
+        let mut depth = 1i32;
+        while !self.is_eof() && depth > 0 {
+            if self.at_sym('(') {
+                depth += 1;
+            } else if self.at_sym(')') {
+                depth -= 1;
+            }
+            self.advance();
+        }
+    }
+
+    fn skip_filegroup_option(&mut self) {
+        if self.consume_sym('(') {
+            let mut depth = 1i32;
+            while !self.is_eof() && depth > 0 {
+                if self.at_sym('(') {
+                    depth += 1;
+                } else if self.at_sym(')') {
+                    depth -= 1;
+                }
+                self.advance();
+            }
+        } else if !self.is_eof() {
+            self.advance();
+        }
     }
     fn parse_create_table(&mut self) -> Option<TableDef> {
         let name = self.parse_table_name()?;
@@ -1158,6 +1240,70 @@ mod tests {
         assert_eq!(unique.name.as_deref(), Some("UQ_Customer_Email"));
         assert_eq!(unique.columns, vec!["Email"]);
         assert!(s.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn parses_normal_nonunique_nonclustered_index() {
+        let s = parse(
+            "CREATE NONCLUSTERED INDEX [IX_Order_CustomerId] ON [dbo].[Order] ([CustomerId] ASC);",
+        );
+        let index = &s.indexes[0];
+        assert_eq!(index.name, "IX_Order_CustomerId");
+        assert_eq!(index.table, TableName::new(Some("dbo".into()), "Order"));
+        assert_eq!(index.columns, vec!["CustomerId"]);
+        assert!(!index.unique);
+        assert_eq!(index.clustered, Some(false));
+        assert_eq!(index.filter, None);
+    }
+
+    #[test]
+    fn parses_unique_nonclustered_index() {
+        let s = parse(
+            "CREATE UNIQUE NONCLUSTERED INDEX [UX_Customer_Email] ON [dbo].[Customer] ([Email] ASC);",
+        );
+        let index = &s.indexes[0];
+        assert_eq!(index.name, "UX_Customer_Email");
+        assert_eq!(index.table, TableName::new(Some("dbo".into()), "Customer"));
+        assert_eq!(index.columns, vec!["Email"]);
+        assert!(index.unique);
+        assert_eq!(index.clustered, Some(false));
+    }
+
+    #[test]
+    fn parses_index_columns_and_ignores_sort_directions() {
+        let s = parse("CREATE INDEX IX_T_AB ON T (A DESC, B ASC);");
+        assert_eq!(s.indexes[0].columns, vec!["A", "B"]);
+        assert!(s.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn parses_filtered_index_expression() {
+        let s = parse(
+            "CREATE INDEX [IX_Order_Open] ON [dbo].[Order] ([Status]) WHERE [Status] = 'Open';",
+        );
+        let index = &s.indexes[0];
+        assert_eq!(index.name, "IX_Order_Open");
+        assert_eq!(index.columns, vec!["Status"]);
+        assert_eq!(index.filter.as_deref(), Some("Status = 'Open'"));
+    }
+
+    #[test]
+    fn diagnoses_unsupported_index_options_and_include_columns() {
+        let s =
+            parse("CREATE INDEX IX_T_A ON T (A) INCLUDE (B) WITH (FILLFACTOR = 80) ON [PRIMARY];");
+        assert_eq!(s.indexes[0].columns, vec!["A"]);
+        assert!(s
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("unsupported INCLUDE columns")));
+        assert!(s
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("unsupported WITH options")));
+        assert!(s
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("unsupported filegroup option")));
     }
 
     #[test]
