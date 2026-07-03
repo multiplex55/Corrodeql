@@ -444,7 +444,20 @@ impl Parser {
         let Some(table_name) = self.parse_table_name() else {
             return;
         };
-        self.consume_kw(Keyword::Add);
+        if self.consume_kw(Keyword::With) {
+            if self.consume_kw(Keyword::Check) {
+                // SQL Server's trusted constraint form. Nothing extra is needed in the model.
+            } else if self.consume_kw(Keyword::NoCheck) {
+                self.warning("ALTER TABLE WITH NOCHECK constraint was not trusted in SQL Server");
+            } else {
+                self.unsupported("unsupported ALTER TABLE WITH option");
+            }
+        }
+        if !self.consume_kw(Keyword::Add) {
+            self.error("expected ADD in ALTER TABLE");
+            self.skip_stmt();
+            return;
+        }
         let constraint_name = if self.consume_kw(Keyword::Constraint) {
             self.ident()
         } else {
@@ -456,9 +469,62 @@ impl Parser {
                 if let Some(table) = tables.iter_mut().find(|t| t.name == table_name) {
                     table.foreign_keys.push(fk);
                 } else {
-                    self.unsupported("foreign key references table not parsed yet");
+                    self.error(&format!(
+                        "ALTER TABLE target table {} was not found for foreign key constraint",
+                        table_name.display_sql_server()
+                    ));
                 }
             }
+        } else if self.consume_kw(Keyword::Default) {
+            let expression = self.collect_expr_until_kw(Keyword::For);
+            if !self.consume_kw(Keyword::For) {
+                self.error("expected FOR in ALTER TABLE DEFAULT constraint");
+                self.skip_stmt();
+                return;
+            }
+            let Some(column_name) = self.ident() else {
+                self.error("expected column name after FOR in ALTER TABLE DEFAULT constraint");
+                self.skip_stmt();
+                return;
+            };
+            if let Some(table) = tables.iter_mut().find(|t| t.name == table_name) {
+                if let Some(column) = table
+                    .columns
+                    .iter_mut()
+                    .find(|column| column.name.eq_ignore_ascii_case(&column_name))
+                {
+                    column.default = Some(DefaultConstraintDef {
+                        name: constraint_name,
+                        expression,
+                    });
+                } else {
+                    self.error(&format!(
+                        "ALTER TABLE DEFAULT target column [{}] was not found in table {}",
+                        column_name,
+                        table_name.display_sql_server()
+                    ));
+                }
+            } else {
+                self.error(&format!(
+                    "ALTER TABLE target table {} was not found for default constraint",
+                    table_name.display_sql_server()
+                ));
+            }
+            self.skip_stmt_tail();
+        } else if self.consume_kw(Keyword::Check) {
+            let check = CheckConstraintDef {
+                name: constraint_name,
+                expression: self.collect_parenthesized_expr(),
+            };
+            if let Some(table) = tables.iter_mut().find(|t| t.name == table_name) {
+                table.check_constraints.push(check);
+            } else {
+                self.error(&format!(
+                    "ALTER TABLE target table {} was not found for check constraint",
+                    table_name.display_sql_server()
+                ));
+            }
+            self.skip_stmt_tail();
         } else {
             self.unsupported("unsupported ALTER TABLE constraint");
             self.skip_stmt();
@@ -652,15 +718,52 @@ impl Parser {
         self.consume_kw(Keyword::References);
         let referenced_table = self.parse_table_name()?;
         let referenced_columns = self.parse_column_list().unwrap_or_default();
+        let mut on_delete = None;
+        let mut on_update = None;
+        while self.consume_kw(Keyword::On) {
+            if self.consume_kw(Keyword::Delete) {
+                on_delete = self.parse_referential_action();
+            } else if self.consume_kw(Keyword::Update) {
+                on_update = self.parse_referential_action();
+            } else {
+                self.unsupported("unsupported FOREIGN KEY ON option");
+                break;
+            }
+        }
         self.skip_stmt_tail();
         Some(ForeignKeyDef {
             name,
             columns,
             referenced_table,
             referenced_columns,
-            on_delete: None,
-            on_update: None,
+            on_delete,
+            on_update,
         })
+    }
+
+    fn parse_referential_action(&mut self) -> Option<ReferentialAction> {
+        if self.consume_kw(Keyword::Cascade) {
+            Some(ReferentialAction::Cascade)
+        } else if self.consume_kw(Keyword::Set) {
+            if self.consume_kw(Keyword::Null) {
+                Some(ReferentialAction::SetNull)
+            } else if self.consume_kw(Keyword::Default) {
+                Some(ReferentialAction::SetDefault)
+            } else {
+                self.unsupported("unsupported FOREIGN KEY SET action");
+                None
+            }
+        } else if self.consume_kw(Keyword::No) {
+            if self.consume_kw(Keyword::Action) {
+                Some(ReferentialAction::NoAction)
+            } else {
+                self.unsupported("unsupported FOREIGN KEY NO action");
+                None
+            }
+        } else {
+            self.unsupported("unsupported FOREIGN KEY referential action");
+            None
+        }
     }
     fn parse_column_list(&mut self) -> Option<Vec<String>> {
         if !self.expect_sym('(') {
@@ -719,6 +822,26 @@ impl Parser {
         let mut s = String::new();
         let mut depth = 0i32;
         while !self.is_eof() {
+            if depth == 0 && (self.at_sym(',') || self.at_sym(')')) {
+                break;
+            }
+            if self.at_sym('(') {
+                depth += 1;
+            }
+            if self.at_sym(')') {
+                depth -= 1;
+            }
+            append_expr_token(&mut s, self.advance());
+        }
+        s
+    }
+    fn collect_expr_until_kw(&mut self, keyword: Keyword) -> String {
+        let mut s = String::new();
+        let mut depth = 0i32;
+        while !self.is_eof() {
+            if depth == 0 && self.peek_is_kw(keyword) {
+                break;
+            }
             if depth == 0 && (self.at_sym(',') || self.at_sym(')')) {
                 break;
             }
@@ -803,6 +926,14 @@ impl Parser {
     fn error(&mut self, msg: &str) {
         self.diagnostics.push(SchemaDiagnostic {
             severity: DiagnosticSeverity::Error,
+            message: msg.into(),
+            line: Some(self.peek().line + self.line_offset),
+            column: Some(self.peek().column),
+        });
+    }
+    fn warning(&mut self, msg: &str) {
+        self.diagnostics.push(SchemaDiagnostic {
+            severity: DiagnosticSeverity::Warning,
             message: msg.into(),
             line: Some(self.peek().line + self.line_offset),
             column: Some(self.peek().column),
@@ -1261,6 +1392,68 @@ mod tests {
         assert_eq!(s.indexes[0].name, "IX]Child]Parent");
         assert_eq!(s.indexes[0].table.table, "Child]Table");
         assert_eq!(s.indexes[0].columns, vec!["Parent]Id"]);
+    }
+
+    #[test]
+    fn alter_table_adds_foreign_key_with_reference_details_and_actions() {
+        let s = parse("CREATE TABLE Parent (Id int); CREATE TABLE Child (ParentId int); ALTER TABLE Child ADD CONSTRAINT FK_Child_Parent FOREIGN KEY (ParentId) REFERENCES Parent (Id) ON DELETE CASCADE ON UPDATE NO ACTION;");
+        let fk = &s.tables[1].foreign_keys[0];
+        assert_eq!(fk.name.as_deref(), Some("FK_Child_Parent"));
+        assert_eq!(fk.columns, vec!["ParentId"]);
+        assert_eq!(
+            fk.referenced_table,
+            TableName::new(Some("dbo".into()), "Parent")
+        );
+        assert_eq!(fk.referenced_columns, vec!["Id"]);
+        assert_eq!(fk.on_delete, Some(ReferentialAction::Cascade));
+        assert_eq!(fk.on_update, Some(ReferentialAction::NoAction));
+    }
+
+    #[test]
+    fn alter_table_default_constraint_attaches_to_target_column() {
+        let s = parse("CREATE TABLE T (Id int, Created datetime); ALTER TABLE T ADD CONSTRAINT DF_T_Created DEFAULT (GETDATE()) FOR Created;");
+        let default = s.tables[0].columns[1].default.as_ref().unwrap();
+        assert_eq!(default.name.as_deref(), Some("DF_T_Created"));
+        assert_eq!(default.expression, "(GETDATE())");
+    }
+
+    #[test]
+    fn alter_table_check_constraint_is_stored() {
+        let s = parse("CREATE TABLE T (Amount int); ALTER TABLE T ADD CONSTRAINT CK_T_Amount CHECK ([Amount] > 0);");
+        let check = &s.tables[0].check_constraints[0];
+        assert_eq!(check.name.as_deref(), Some("CK_T_Amount"));
+        assert_eq!(check.expression, "Amount > 0");
+    }
+
+    #[test]
+    fn alter_table_with_check_is_accepted_and_nocheck_warns() {
+        let trusted = parse("CREATE TABLE P (Id int); CREATE TABLE C (Pid int); ALTER TABLE C WITH CHECK ADD CONSTRAINT FK_C_P FOREIGN KEY (Pid) REFERENCES P (Id);");
+        assert_eq!(trusted.tables[1].foreign_keys.len(), 1);
+        assert!(trusted.diagnostics.is_empty());
+
+        let untrusted = parse("CREATE TABLE P (Id int); CREATE TABLE C (Pid int); ALTER TABLE C WITH NOCHECK ADD CONSTRAINT FK_C_P FOREIGN KEY (Pid) REFERENCES P (Id);");
+        assert_eq!(untrusted.tables[1].foreign_keys.len(), 1);
+        assert!(untrusted.diagnostics.iter().any(
+            |d| d.severity == DiagnosticSeverity::Warning && d.message.contains("not trusted")
+        ));
+    }
+
+    #[test]
+    fn alter_table_missing_table_or_column_reports_diagnostic() {
+        let missing_table = parse("ALTER TABLE Missing ADD CONSTRAINT CK_Missing CHECK (Id > 0);");
+        assert!(missing_table
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == DiagnosticSeverity::Error
+                && d.message.contains("[dbo].[Missing]")));
+
+        let missing_column = parse("CREATE TABLE T (Id int); ALTER TABLE T ADD CONSTRAINT DF_T_Missing DEFAULT (0) FOR Missing;");
+        assert!(missing_column
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == DiagnosticSeverity::Error
+                && d.message.contains("Missing")
+                && d.message.contains("[dbo].[T]")));
     }
 
     #[test]
