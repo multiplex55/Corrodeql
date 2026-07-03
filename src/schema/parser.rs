@@ -1,6 +1,7 @@
 use super::lexer::{lex, Keyword, Token, TokenKind};
 use super::model::*;
 use super::preprocessor::preprocess;
+use crate::mssql::{defaults::normalize_default, types::normalize_type};
 
 /// Parses schema input into a schema model. Recoverable unsupported statements
 /// are reported in diagnostics and skipped.
@@ -34,10 +35,27 @@ impl Parser {
                     self.unsupported("unsupported CREATE statement");
                     self.skip_stmt();
                 }
+            } else if self.consume_kw(Keyword::Alter) {
+                if self.consume_kw(Keyword::Table) {
+                    self.parse_alter_table(&mut tables);
+                } else {
+                    self.unsupported("unsupported ALTER statement");
+                    self.skip_stmt();
+                }
             } else if self.consume_sym(';') {
             } else {
                 self.unsupported("unsupported statement skipped");
                 self.skip_stmt();
+            }
+        }
+        for table in &tables {
+            for column in &table.columns {
+                self.diagnostics
+                    .extend(normalize_type(&column.data_type).diagnostics);
+                if let Some(default) = &column.default {
+                    self.diagnostics
+                        .extend(normalize_default(&default.expression).diagnostics);
+                }
             }
         }
         DatabaseSchema {
@@ -53,11 +71,22 @@ impl Parser {
         }
         let mut columns = Vec::new();
         let mut pk = None;
+        let mut unique_constraints = Vec::new();
+        let mut check_constraints = Vec::new();
         while !self.is_eof() && !self.consume_sym(')') {
             if self.consume_kw(Keyword::Constraint) {
                 let cname = self.ident();
                 if self.consume_kw(Keyword::Primary) {
                     pk = self.parse_pk(cname);
+                } else if self.consume_kw(Keyword::Unique) {
+                    if let Some(unique) = self.parse_unique(cname) {
+                        unique_constraints.push(unique);
+                    }
+                } else if self.consume_kw(Keyword::Check) {
+                    check_constraints.push(CheckConstraintDef {
+                        name: cname,
+                        expression: self.collect_parenthesized_expr(),
+                    });
                 } else {
                     self.unsupported("unsupported table constraint");
                     self.skip_to_comma_or_rparen();
@@ -80,9 +109,9 @@ impl Parser {
             name,
             columns,
             primary_key: pk,
-            unique_constraints: Vec::new(),
+            unique_constraints,
             foreign_keys: Vec::new(),
-            check_constraints: Vec::new(),
+            check_constraints,
         })
     }
     fn parse_table_name(&mut self) -> Option<TableName> {
@@ -106,6 +135,16 @@ impl Parser {
                 nullable = false;
             } else if self.consume_kw(Keyword::Null) {
                 nullable = true;
+            } else if self.consume_kw(Keyword::Constraint) {
+                let constraint_name = self.ident();
+                if self.consume_kw(Keyword::Default) {
+                    default = Some(DefaultConstraintDef {
+                        name: constraint_name,
+                        expression: self.collect_expr(),
+                    });
+                } else if self.consume_kw(Keyword::Check) {
+                    self.collect_parenthesized_expr();
+                }
             } else if self.consume_kw(Keyword::Default) {
                 default = Some(DefaultConstraintDef {
                     name: None,
@@ -144,6 +183,30 @@ impl Parser {
                 columns: vec![col.name.clone()],
                 clustered: None,
             })
+    }
+    fn parse_alter_table(&mut self, tables: &mut [TableDef]) {
+        let Some(table_name) = self.parse_table_name() else {
+            return;
+        };
+        self.consume_kw(Keyword::Add);
+        let constraint_name = if self.consume_kw(Keyword::Constraint) {
+            self.ident()
+        } else {
+            None
+        };
+        if self.consume_kw(Keyword::Foreign) {
+            self.consume_kw(Keyword::Key);
+            if let Some(fk) = self.parse_fk(constraint_name) {
+                if let Some(table) = tables.iter_mut().find(|t| t.name == table_name) {
+                    table.foreign_keys.push(fk);
+                } else {
+                    self.unsupported("foreign key references table not parsed yet");
+                }
+            }
+        } else {
+            self.unsupported("unsupported ALTER TABLE constraint");
+            self.skip_stmt();
+        }
     }
     fn parse_pk(&mut self, name: Option<String>) -> Option<PrimaryKeyDef> {
         self.consume_kw(Keyword::Key);
@@ -253,6 +316,41 @@ impl Parser {
             },
         })
     }
+    fn parse_unique(&mut self, name: Option<String>) -> Option<UniqueConstraintDef> {
+        let _ = self.consume_kw(Keyword::Clustered) || self.consume_kw(Keyword::NonClustered);
+        let columns = self.parse_column_list()?;
+        Some(UniqueConstraintDef { name, columns })
+    }
+    fn parse_fk(&mut self, name: Option<String>) -> Option<ForeignKeyDef> {
+        let columns = self.parse_column_list()?;
+        self.consume_kw(Keyword::References);
+        let referenced_table = self.parse_table_name()?;
+        let referenced_columns = self.parse_column_list().unwrap_or_default();
+        self.skip_stmt_tail();
+        Some(ForeignKeyDef {
+            name,
+            columns,
+            referenced_table,
+            referenced_columns,
+            on_delete: None,
+            on_update: None,
+        })
+    }
+    fn parse_column_list(&mut self) -> Option<Vec<String>> {
+        if !self.expect_sym('(') {
+            return None;
+        }
+        let mut columns = Vec::new();
+        while !self.is_eof() && !self.consume_sym(')') {
+            if let Some(column) = self.ident() {
+                columns.push(column);
+            } else {
+                self.advance();
+            }
+            self.consume_sym(',');
+        }
+        Some(columns)
+    }
     fn type_args(&mut self) -> Vec<String> {
         let mut a = Vec::new();
         if self.consume_sym('(') {
@@ -266,7 +364,41 @@ impl Parser {
     }
     fn collect_expr(&mut self) -> String {
         let mut s = String::new();
-        while !self.is_eof() && !self.at_sym(',') && !self.at_sym(')') {
+        let mut depth = 0i32;
+        while !self.is_eof() {
+            if depth == 0 && (self.at_sym(',') || self.at_sym(')')) {
+                break;
+            }
+            if !s.is_empty() {
+                s.push(' ')
+            };
+            if self.at_sym('(') {
+                depth += 1;
+            }
+            if self.at_sym(')') {
+                depth -= 1;
+            }
+            s.push_str(&self.advance().lexeme);
+        }
+        s
+    }
+    fn collect_parenthesized_expr(&mut self) -> String {
+        if !self.consume_sym('(') {
+            return self.collect_expr();
+        }
+        let mut s = String::new();
+        let mut depth = 1i32;
+        while !self.is_eof() && depth > 0 {
+            if self.at_sym('(') {
+                depth += 1;
+            }
+            if self.at_sym(')') {
+                depth -= 1;
+                if depth == 0 {
+                    self.advance();
+                    break;
+                }
+            }
             if !s.is_empty() {
                 s.push(' ')
             };
@@ -394,6 +526,97 @@ mod tests {
             vec!["A", "B"]
         );
     }
+
+    #[test]
+    fn parses_major_sql_server_type_families() {
+        let s = parse("CREATE TABLE T (A int, B bigint, C smallint, D tinyint, E bit, F decimal(10,2), G numeric(8,3), H money, I float, J real, K char(5), L varchar(20), M varchar(max), N nchar(4), O nvarchar(30), P nvarchar(max), Q text, R ntext, S date, U datetime, V datetime2, W smalldatetime, X time, Y uniqueidentifier, Z binary, AA varbinary, AB varbinary(max));");
+        let columns = &s.tables[0].columns;
+        assert_eq!(columns[0].data_type, SqlServerType::Int);
+        assert_eq!(
+            columns[5].data_type,
+            SqlServerType::Decimal {
+                precision: Some(10),
+                scale: Some(2)
+            }
+        );
+        assert_eq!(
+            columns[12].data_type,
+            SqlServerType::VarChar {
+                length: None,
+                max: true
+            }
+        );
+        assert_eq!(
+            columns[15].data_type,
+            SqlServerType::NVarChar {
+                length: None,
+                max: true
+            }
+        );
+        assert_eq!(
+            columns[24].data_type,
+            SqlServerType::Binary { length: None }
+        );
+        assert_eq!(
+            columns[26].data_type,
+            SqlServerType::VarBinary {
+                length: None,
+                max: true
+            }
+        );
+        assert!(s.diagnostics.iter().any(|d| d.message.contains("affinity")));
+    }
+
+    #[test]
+    fn parses_named_default_constraints_and_default_diagnostics() {
+        let s = parse("CREATE TABLE T (Created datetime CONSTRAINT DF_T_Created DEFAULT (GETDATE()), RowGuid uniqueidentifier DEFAULT (NEWID()), Flag int CONSTRAINT DF_T_Flag DEFAULT ((0)));");
+        assert_eq!(
+            s.tables[0].columns[0]
+                .default
+                .as_ref()
+                .unwrap()
+                .name
+                .as_deref(),
+            Some("DF_T_Created")
+        );
+        assert_eq!(
+            normalize_default(&s.tables[0].columns[2].default.as_ref().unwrap().expression)
+                .expression,
+            "0"
+        );
+        assert_eq!(
+            normalize_default(&s.tables[0].columns[0].default.as_ref().unwrap().expression)
+                .expression,
+            "CURRENT_TIMESTAMP"
+        );
+        assert!(s.diagnostics.iter().any(|d| d.message.contains("NEWID()")));
+    }
+
+    #[test]
+    fn parses_named_unique_check_and_alter_foreign_key_constraints() {
+        let s = parse("CREATE TABLE Parent (Id int, Code varchar(10), CONSTRAINT PK_Parent PRIMARY KEY (Id), CONSTRAINT UQ_Parent_Code UNIQUE (Code), CONSTRAINT CK_Parent_Id CHECK (Id > 0)); CREATE TABLE Child (Id int, ParentId int); ALTER TABLE Child ADD CONSTRAINT FK_Child_Parent FOREIGN KEY (ParentId) REFERENCES Parent (Id);");
+        let parent = &s.tables[0];
+        assert_eq!(
+            parent.primary_key.as_ref().unwrap().name.as_deref(),
+            Some("PK_Parent")
+        );
+        assert_eq!(
+            parent.unique_constraints[0].name.as_deref(),
+            Some("UQ_Parent_Code")
+        );
+        assert_eq!(
+            parent.check_constraints[0].name.as_deref(),
+            Some("CK_Parent_Id")
+        );
+        let child = &s.tables[1];
+        assert_eq!(
+            child.foreign_keys[0].name.as_deref(),
+            Some("FK_Child_Parent")
+        );
+        assert_eq!(child.foreign_keys[0].columns, vec!["ParentId"]);
+        assert_eq!(child.foreign_keys[0].referenced_columns, vec!["Id"]);
+    }
+
     #[test]
     fn unsupported_statements_emit_diagnostics() {
         let s = parse("ALTER TABLE T ADD X int; CREATE TABLE T (Id int);");
