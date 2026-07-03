@@ -764,7 +764,7 @@ mod tests {
         assert!(!db.exists());
         assert!(fs::read_to_string(ddl_out)
             .unwrap()
-            .contains("CREATE TABLE \"T\""));
+            .contains("CREATE TABLE \"dbo_T\""));
         assert!(report_dir.join("converted_schema.sql").exists());
         assert!(report_dir.join("conversion_report.txt").exists());
         assert!(report_dir.join("conversion_report.json").exists());

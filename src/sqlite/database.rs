@@ -142,7 +142,7 @@ mod tests {
 
         let count: i64 = connection
             .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('Parent', 'Child')",
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('dbo_Parent', 'dbo_Child')",
                 [],
                 |row| row.get(0),
             )

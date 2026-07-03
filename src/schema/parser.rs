@@ -1,7 +1,11 @@
 use super::lexer::{lex, Keyword, Token, TokenKind};
 use super::model::*;
 use super::preprocessor::{preprocess, SqlBatch};
-use crate::mssql::{defaults::normalize_default, types::normalize_type};
+use crate::mssql::{
+    defaults::normalize_default,
+    identifiers::{object_name_from_identifiers, parse_identifier_token, Identifier},
+    types::normalize_type,
+};
 
 /// Parses schema input into a schema model. Recoverable unsupported statements
 /// are reported in diagnostics and skipped.
@@ -165,12 +169,17 @@ impl Parser {
         })
     }
     fn parse_table_name(&mut self) -> Option<TableName> {
-        let first = self.ident()?;
+        let mut parts = Vec::new();
+        parts.push(Identifier(self.ident()?));
         if self.consume_sym('.') {
-            let second = self.ident()?;
-            Some(TableName::new(Some(first), second))
-        } else {
-            Some(TableName::new(None, first))
+            parts.push(Identifier(self.ident()?));
+        }
+        match object_name_from_identifiers(parts) {
+            Ok(name) => Some(name),
+            Err(error) => {
+                self.identifier_error(error.message.as_str());
+                None
+            }
         }
     }
     fn parse_column(&mut self) -> Option<ColumnDef> {
@@ -457,9 +466,17 @@ impl Parser {
         s
     }
     fn ident(&mut self) -> Option<String> {
-        match &self.peek().kind {
-            TokenKind::Identifier => Some(self.advance().lexeme.clone()),
-            _ => None,
+        match parse_identifier_token(self.peek()) {
+            Ok(identifier) => {
+                self.advance();
+                Some(identifier.0)
+            }
+            Err(error) if matches!(self.peek().kind, TokenKind::MalformedIdentifier) => {
+                self.identifier_error(error.message.as_str());
+                self.advance();
+                None
+            }
+            Err(_) => None,
         }
     }
     fn skip_stmt(&mut self) {
@@ -489,6 +506,14 @@ impl Parser {
         });
     }
     fn error(&mut self, msg: &str) {
+        self.diagnostics.push(SchemaDiagnostic {
+            severity: DiagnosticSeverity::Error,
+            message: msg.into(),
+            line: Some(self.peek().line + self.line_offset),
+            column: Some(self.peek().column),
+        });
+    }
+    fn identifier_error(&mut self, msg: &str) {
         self.diagnostics.push(SchemaDiagnostic {
             severity: DiagnosticSeverity::Error,
             message: msg.into(),
@@ -669,6 +694,48 @@ mod tests {
         );
         assert_eq!(child.foreign_keys[0].columns, vec!["ParentId"]);
         assert_eq!(child.foreign_keys[0].referenced_columns, vec!["Id"]);
+    }
+
+    #[test]
+    fn normalizes_escaped_identifiers_for_tables_constraints_foreign_keys_and_indexes() {
+        let s = parse(
+            "CREATE TABLE [dbo].[Parent]]Table] ([Id]]Col] int NOT NULL, CONSTRAINT [PK]]Parent] PRIMARY KEY ([Id]]Col]));
+             CREATE TABLE [dbo].[Child]]Table] ([Id]]Col] int NOT NULL, [Parent]]Id] int NOT NULL);
+             ALTER TABLE [dbo].[Child]]Table] ADD CONSTRAINT [FK]]Child]]Parent] FOREIGN KEY ([Parent]]Id]) REFERENCES [dbo].[Parent]]Table] ([Id]]Col]);
+             CREATE INDEX [IX]]Child]]Parent] ON [dbo].[Child]]Table] ([Parent]]Id]);",
+        );
+
+        let parent = &s.tables[0];
+        assert_eq!(parent.name.table, "Parent]Table");
+        assert_eq!(parent.columns[0].name, "Id]Col");
+        assert_eq!(
+            parent.primary_key.as_ref().unwrap().name.as_deref(),
+            Some("PK]Parent")
+        );
+        assert_eq!(parent.primary_key.as_ref().unwrap().columns, vec!["Id]Col"]);
+
+        let child = &s.tables[1];
+        assert_eq!(child.name.table, "Child]Table");
+        assert_eq!(child.columns[1].name, "Parent]Id");
+        assert_eq!(
+            child.foreign_keys[0].name.as_deref(),
+            Some("FK]Child]Parent")
+        );
+        assert_eq!(child.foreign_keys[0].columns, vec!["Parent]Id"]);
+        assert_eq!(child.foreign_keys[0].referenced_table.table, "Parent]Table");
+        assert_eq!(child.foreign_keys[0].referenced_columns, vec!["Id]Col"]);
+
+        assert_eq!(s.indexes[0].name, "IX]Child]Parent");
+        assert_eq!(s.indexes[0].table.table, "Child]Table");
+        assert_eq!(s.indexes[0].columns, vec!["Parent]Id"]);
+    }
+
+    #[test]
+    fn reports_unterminated_bracketed_identifier() {
+        let s = parse("CREATE TABLE [Broken (Id int);");
+        assert!(s.diagnostics.iter().any(|diagnostic| diagnostic
+            .message
+            .contains("unterminated bracketed identifier at line 1")));
     }
 
     #[test]

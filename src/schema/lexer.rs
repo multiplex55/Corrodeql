@@ -11,6 +11,7 @@ pub struct Token {
 pub enum TokenKind {
     Keyword(Keyword),
     Identifier,
+    MalformedIdentifier,
     String,
     Number,
     Symbol(char),
@@ -194,6 +195,7 @@ impl<'a> Lexer<'a> {
     }
     fn bracketed_identifier(&mut self, line: usize, column: usize) -> Token {
         let mut s = String::new();
+        let mut terminated = false;
         self.bump();
         while let Some(c) = self.bump() {
             if c == ']' {
@@ -201,6 +203,7 @@ impl<'a> Lexer<'a> {
                     s.push(']');
                     self.bump();
                 } else {
+                    terminated = true;
                     break;
                 }
             } else {
@@ -208,7 +211,11 @@ impl<'a> Lexer<'a> {
             }
         }
         Token {
-            kind: TokenKind::Identifier,
+            kind: if terminated {
+                TokenKind::Identifier
+            } else {
+                TokenKind::MalformedIdentifier
+            },
             lexeme: s,
             line,
             column,
