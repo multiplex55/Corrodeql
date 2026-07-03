@@ -20,4 +20,6 @@ pub enum Error {
         value: String,
         expected: &'static str,
     },
+    #[error("validation error: {message}")]
+    Validation { message: String },
 }
