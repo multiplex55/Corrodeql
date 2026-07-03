@@ -27,7 +27,7 @@ fn public_module_tree_exposes_major_areas() {
 
     let _reader = data::csv_reader::CsvReader;
     data::conversion::convert();
-    let _manifest = data::manifest::Manifest;
+    let _manifest = data::manifest::Manifest::default();
 
     let report = report::model::Report;
     let _text = report::text::render(&report);
