@@ -1,6 +1,6 @@
 use super::model::Report;
 
-/// Renders a JSON report placeholder.
-pub fn render(_report: &Report) -> String {
-    "{}".to_owned()
+/// Renders a JSON report.
+pub fn render(report: &Report) -> String {
+    serde_json::to_string_pretty(report).expect("report model should serialize")
 }

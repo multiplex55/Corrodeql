@@ -29,7 +29,7 @@ fn public_module_tree_exposes_major_areas() {
     data::conversion::convert();
     let _manifest = data::manifest::Manifest::default();
 
-    let report = report::model::Report;
+    let report = report::model::Report::default();
     let _text = report::text::render(&report);
     let _json = report::json::render(&report);
 }
