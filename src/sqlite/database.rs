@@ -24,6 +24,20 @@ pub fn open_output_database(
     Ok(Database)
 }
 
+/// Creates an empty SQLite output database and returns the live connection.
+pub fn create_output_connection(path: impl AsRef<Utf8Path>, overwrite: bool) -> Result<Connection> {
+    let path = path.as_ref();
+    validate_output_path(path, overwrite)?;
+
+    if path.exists() {
+        fs::remove_file(path.as_std_path())?;
+    }
+
+    let connection = Connection::open(path.as_std_path())?;
+    connection.pragma_update(None, "foreign_keys", "ON")?;
+    Ok(connection)
+}
+
 /// Opens a SQLite output database and returns the live connection after schema creation.
 pub fn open_output_connection(
     path: impl AsRef<Utf8Path>,

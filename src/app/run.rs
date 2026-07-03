@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::{fs, io};
@@ -18,7 +18,7 @@ use crate::report::{
     text,
 };
 use crate::schema::{model as schema_model, parser};
-use crate::sqlite::{database, ddl, validate as sqlite_validate};
+use crate::sqlite::{database, ddl, import as sqlite_import, validate as sqlite_validate};
 
 /// Runs the CorrodeQL command-line application.
 pub fn run() -> ExitCode {
@@ -56,32 +56,79 @@ pub fn run_convert(args: super::cli::ConvertArgs) -> Result<()> {
 }
 
 fn run_convert_with_options(options: ConvertOptions) -> Result<()> {
-    validate_schema_path(Some(options.schema.as_path()))?;
-    validate_data_dir(Some(options.data_dir.as_path()))?;
-    validate_output_parent(Some(options.out.as_path()))?;
-    validate_output_parent(options.emit_ddl.as_deref())?;
-    if let Some(report_dir) = &options.report_dir {
-        validate_output_parent(Some(report_dir.as_path()))?;
-    }
+    validate_convert_options(&options)?;
 
     let schema_text = fs::read_to_string(&options.schema)?;
-    let schema = parser::parse(&schema_text);
-    let core_options = core_convert_options(&options);
-    let generated = ddl::generate(&schema, &core_options)?;
-    write_convert_artifacts(&options, &schema, &generated, &core_options)?;
-
-    if options.dry_run {
-        println!("convert dry run: schema parsed and outputs generated without touching SQLite");
-    } else {
-        database::open_output_database(
-            camino::Utf8Path::from_path(options.out.as_path())
-                .ok_or_else(|| anyhow::anyhow!("output SQLite path is not valid UTF-8"))?,
-            options.overwrite,
+    let parsed_schema = parser::parse(&schema_text);
+    if parsed_schema
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == schema_model::DiagnosticSeverity::Error)
+    {
+        let core_options = core_convert_options(&options);
+        let generated = ddl::generate(&parsed_schema, &core_options).unwrap_or_default();
+        write_convert_artifacts(
+            &options,
+            &parsed_schema,
             &generated,
+            &core_options,
+            None,
+            report_validation_not_attempted("parse errors prevented database creation"),
         )?;
-        println!("created SQLite database: {}", options.out.display());
+        bail!("parse errors prevented database creation");
     }
 
+    let schema = crate::mssql::normalize(parsed_schema);
+    let core_options = core_convert_options(&options);
+    let generated = ddl::generate(&schema, &core_options)?;
+
+    if options.dry_run {
+        write_convert_artifacts(
+            &options,
+            &schema,
+            &generated,
+            &core_options,
+            None,
+            report_validation_not_attempted("dry run did not create or validate SQLite output"),
+        )?;
+        println!("convert dry run: schema parsed and outputs generated without touching SQLite");
+        return Ok(());
+    }
+
+    let output_path = camino::Utf8Path::from_path(options.out.as_path())
+        .ok_or_else(|| anyhow::anyhow!("output SQLite path is not valid UTF-8"))?;
+    let mut connection = database::create_output_connection(output_path, options.overwrite)?;
+    let import_report =
+        match sqlite_import::import_database(&mut connection, &schema, &core_options) {
+            Ok(report) => report,
+            Err(error) => {
+                write_convert_artifacts(
+                    &options,
+                    &schema,
+                    &generated,
+                    &core_options,
+                    None,
+                    report_validation_not_attempted(&format!("import failed: {error}")),
+                )?;
+                return Err(error.into());
+            }
+        };
+    let validation = sqlite_validate::validate_database(&connection, &schema, &core_options)?;
+    let report_validation = report_validation_from_sqlite(&validation);
+    write_convert_artifacts(
+        &options,
+        &schema,
+        &generated,
+        &core_options,
+        Some(import_report),
+        report_validation,
+    )?;
+
+    if !validation.is_success() {
+        bail!("validation failed");
+    }
+
+    println!("created SQLite database: {}", options.out.display());
     Ok(())
 }
 
@@ -156,6 +203,23 @@ pub fn run_validate(args: ValidateArgs) -> Result<()> {
 /// Placeholder implementation for `corrodeql init-example`.
 pub fn run_init_example(_args: InitExampleArgs) -> Result<()> {
     println!("init-example is not yet implemented; no files were written");
+    Ok(())
+}
+
+fn validate_convert_options(options: &ConvertOptions) -> Result<()> {
+    validate_schema_path(Some(options.schema.as_path()))?;
+    validate_data_dir(Some(options.data_dir.as_path()))?;
+    validate_output_parent(Some(options.out.as_path()))?;
+    validate_output_parent(options.emit_ddl.as_deref())?;
+    if let Some(report_dir) = &options.report_dir {
+        validate_output_parent(Some(report_dir.as_path()))?;
+    }
+    if options.out.exists() && !options.overwrite && !options.dry_run {
+        bail!(
+            "output SQLite database already exists (use --overwrite to replace it): {}",
+            options.out.display()
+        );
+    }
     Ok(())
 }
 
@@ -285,6 +349,8 @@ fn write_convert_artifacts(
     schema: &schema_model::DatabaseSchema,
     generated: &ddl::GeneratedDdl,
     core_options: &core_options::ConvertOptions,
+    import_report: Option<ImportReport>,
+    validation: ValidationReport,
 ) -> Result<()> {
     let schema_sql = generated.to_sql();
     if let Some(path) = &options.emit_ddl {
@@ -294,7 +360,14 @@ fn write_convert_artifacts(
     let report_dir = resolved_report_dir(options);
     fs::create_dir_all(&report_dir)?;
     fs::write(report_dir.join("converted_schema.sql"), &schema_sql)?;
-    let report = build_conversion_report(options, schema, generated, core_options)?;
+    let report = build_conversion_report(
+        options,
+        schema,
+        generated,
+        core_options,
+        import_report,
+        validation,
+    )?;
     fs::write(
         report_dir.join("conversion_report.txt"),
         text::render(&report),
@@ -330,6 +403,8 @@ fn build_conversion_report(
     schema: &schema_model::DatabaseSchema,
     generated: &ddl::GeneratedDdl,
     core_options: &core_options::ConvertOptions,
+    import_report: Option<ImportReport>,
+    validation: ValidationReport,
 ) -> Result<ConversionReport> {
     let table_names =
         crate::sqlite::names::table_names_for_schema(schema, core_options.table_name_mode)?;
@@ -409,35 +484,88 @@ fn build_conversion_report(
             indexes_detected: schema.indexes.len(),
             tables,
         },
-        import: ImportReport {
-            tables: schema
-                .tables()
-                .iter()
-                .map(|table| {
-                    let sqlite_table = table_names
-                        .get(&table.name)
-                        .map(|name| name.0.clone())
-                        .unwrap_or_else(|| table.name.display_sql_server());
-                    TableImportReport {
-                        source_table: table.name.display_sql_server(),
-                        sqlite_table,
-                        csv_path: None,
-                        status: TableImportStatus::Skipped,
-                        rows_read: 0,
-                        rows_inserted: 0,
-                        rows_rejected: 0,
-                        diagnostics: vec![
-                            "CSV import was not run by this conversion path".to_owned()
-                        ],
-                    }
-                })
-                .collect(),
-            ..ImportReport::default()
-        },
-        validation: ValidationReport::default(),
+        import: import_report.unwrap_or_else(|| skipped_import_report(schema, &table_names)),
+        validation,
         diagnostics,
         unsupported_sql_server_features,
     })
+}
+
+fn skipped_import_report(
+    schema: &schema_model::DatabaseSchema,
+    table_names: &HashMap<schema_model::TableName, crate::sqlite::names::Name>,
+) -> ImportReport {
+    ImportReport {
+        tables: schema
+            .tables()
+            .iter()
+            .map(|table| {
+                let sqlite_table = table_names
+                    .get(&table.name)
+                    .map(|name| name.0.clone())
+                    .unwrap_or_else(|| table.name.display_sql_server());
+                TableImportReport {
+                    source_table: table.name.display_sql_server(),
+                    sqlite_table,
+                    csv_path: None,
+                    status: TableImportStatus::Skipped,
+                    rows_read: 0,
+                    rows_inserted: 0,
+                    rows_rejected: 0,
+                    diagnostics: vec!["CSV import was not run".to_owned()],
+                }
+            })
+            .collect(),
+        ..ImportReport::default()
+    }
+}
+
+fn report_validation_not_attempted(message: &str) -> ValidationReport {
+    ValidationReport {
+        attempted: false,
+        success: false,
+        tables_validated: 0,
+        diagnostics: vec![Diagnostic {
+            severity: DiagnosticSeverity::Warning,
+            message: message.to_owned(),
+        }],
+    }
+}
+
+fn report_validation_from_sqlite(report: &sqlite_validate::ValidationReport) -> ValidationReport {
+    let mut diagnostics = Vec::new();
+    for table in &report.tables {
+        if table.status != sqlite_validate::TableValidationStatus::Valid {
+            diagnostics.push(Diagnostic {
+                severity: DiagnosticSeverity::Error,
+                message: format!(
+                    "validation failed for {}: {:?}",
+                    table.source_table, table.status
+                ),
+            });
+        }
+    }
+    for violation in &report.foreign_key_violations {
+        diagnostics.push(Diagnostic {
+            severity: DiagnosticSeverity::Error,
+            message: format!(
+                "foreign key violation in {} referencing {}",
+                violation.table, violation.parent
+            ),
+        });
+    }
+    for missing in &report.missing_indexes_or_constraints {
+        diagnostics.push(Diagnostic {
+            severity: DiagnosticSeverity::Warning,
+            message: missing.clone(),
+        });
+    }
+    ValidationReport {
+        attempted: true,
+        success: report.is_success(),
+        tables_validated: report.tables.len(),
+        diagnostics,
+    }
 }
 
 fn table_constraints(table: &schema_model::TableDef) -> Vec<String> {
@@ -594,7 +722,15 @@ mod tests {
         };
         let core_options = core_convert_options(&options);
         let generated = ddl::generate(&schema, &core_options).unwrap();
-        let report = build_conversion_report(&options, &schema, &generated, &core_options).unwrap();
+        let report = build_conversion_report(
+            &options,
+            &schema,
+            &generated,
+            &core_options,
+            None,
+            report_validation_not_attempted("test"),
+        )
+        .unwrap();
 
         let table_names = report
             .schema
