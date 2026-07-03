@@ -1,0 +1,32 @@
+use corrodeql::{config, data, mssql, report, schema, sqlite};
+
+#[test]
+fn public_module_tree_exposes_major_areas() {
+    let _options = config::options::Options;
+    let _paths = config::paths::Paths;
+
+    let schema = schema::parser::parse(schema::preprocessor::preprocess(""));
+    let _schema = schema::normalize::normalize(schema);
+    let _token = schema::lexer::Token;
+    let _diagnostic = schema::diagnostics::Diagnostic;
+
+    let _identifier = mssql::identifiers::Identifier(String::new());
+    let _type_name = mssql::types::TypeName(String::new());
+    let _default = mssql::defaults::DefaultExpression(String::new());
+    let _constraint = mssql::constraints::ConstraintName(String::new());
+
+    let _name = sqlite::names::Name(String::new());
+    let _storage_class = sqlite::types::StorageClass::Text;
+    let _statement = sqlite::ddl::Statement(String::new());
+    let _database = sqlite::database::Database;
+    sqlite::import::import();
+    sqlite::validate::validate();
+
+    let _reader = data::csv_reader::CsvReader;
+    data::conversion::convert();
+    let _manifest = data::manifest::Manifest;
+
+    let report = report::model::Report;
+    let _text = report::text::render(&report);
+    let _json = report::json::render(&report);
+}

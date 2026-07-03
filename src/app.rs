@@ -1,4 +1,5 @@
-/// Runs the CorrodeQL command-line application.
-pub fn run() {
-    println!("corrodeql starting up");
-}
+pub mod cli;
+pub mod interactive;
+pub mod run;
+
+pub use run::run;
