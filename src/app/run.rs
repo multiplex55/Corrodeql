@@ -1,4 +1,5 @@
-use std::path::Path;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::{fs, io};
 
@@ -8,8 +9,15 @@ use clap::Parser;
 use super::cli::{Cli, Command, EmitDdlArgs, InitExampleArgs, InspectSchemaArgs, ValidateArgs};
 use super::interactive::{complete_convert_options, ConvertOptions};
 use crate::config::options as core_options;
-use crate::report::{json, model::Report, text};
-use crate::schema::parser;
+use crate::report::{
+    json,
+    model::{
+        ConversionReport, Diagnostic, DiagnosticSeverity, ImportReport, SchemaSummary,
+        TableImportReport, TableImportStatus, TableReport, ValidationReport,
+    },
+    text,
+};
+use crate::schema::{model as schema_model, parser};
 use crate::sqlite::{database, ddl, validate as sqlite_validate};
 
 /// Runs the CorrodeQL command-line application.
@@ -60,7 +68,7 @@ fn run_convert_with_options(options: ConvertOptions) -> Result<()> {
     let schema = parser::parse(&schema_text);
     let core_options = core_convert_options(&options);
     let generated = ddl::generate(&schema, &core_options)?;
-    write_convert_artifacts(&options, &generated)?;
+    write_convert_artifacts(&options, &schema, &generated, &core_options)?;
 
     if options.dry_run {
         println!("convert dry run: schema parsed and outputs generated without touching SQLite");
@@ -272,22 +280,214 @@ fn core_convert_options(options: &ConvertOptions) -> core_options::ConvertOption
     }
 }
 
-fn write_convert_artifacts(options: &ConvertOptions, generated: &ddl::GeneratedDdl) -> Result<()> {
+fn write_convert_artifacts(
+    options: &ConvertOptions,
+    schema: &schema_model::DatabaseSchema,
+    generated: &ddl::GeneratedDdl,
+    core_options: &core_options::ConvertOptions,
+) -> Result<()> {
     let schema_sql = generated.to_sql();
     if let Some(path) = &options.emit_ddl {
         fs::write(path, &schema_sql)?;
     }
 
-    if let Some(report_dir) = &options.report_dir {
-        fs::create_dir_all(report_dir)?;
-        fs::write(report_dir.join("converted_schema.sql"), &schema_sql)?;
-        let report = Report::default();
-        fs::write(report_dir.join("report.txt"), text::render(&report))?;
-        fs::write(report_dir.join("report.json"), json::render(&report))?;
-    }
+    let report_dir = resolved_report_dir(options);
+    fs::create_dir_all(&report_dir)?;
+    fs::write(report_dir.join("converted_schema.sql"), &schema_sql)?;
+    let report = build_conversion_report(options, schema, generated, core_options)?;
+    fs::write(
+        report_dir.join("conversion_report.txt"),
+        text::render(&report),
+    )?;
+    fs::write(
+        report_dir.join("conversion_report.json"),
+        json::render(&report),
+    )?;
 
     io::Write::flush(&mut io::stdout())?;
     Ok(())
+}
+
+pub(crate) fn resolved_report_dir(options: &ConvertOptions) -> PathBuf {
+    options.report_dir.clone().unwrap_or_else(|| {
+        let base = options
+            .out
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .filter(|stem| !stem.is_empty())
+            .unwrap_or("conversion");
+        options
+            .out
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."))
+            .join(format!("{base}_reports"))
+    })
+}
+
+fn build_conversion_report(
+    options: &ConvertOptions,
+    schema: &schema_model::DatabaseSchema,
+    generated: &ddl::GeneratedDdl,
+    core_options: &core_options::ConvertOptions,
+) -> Result<ConversionReport> {
+    let table_names =
+        crate::sqlite::names::table_names_for_schema(schema, core_options.table_name_mode)?;
+    let mut indexes_by_table: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for index in &schema.indexes {
+        indexes_by_table
+            .entry(index.table.display_sql_server())
+            .or_default()
+            .push(index.name.clone());
+    }
+    for indexes in indexes_by_table.values_mut() {
+        indexes.sort();
+    }
+
+    let mut tables = schema
+        .tables()
+        .iter()
+        .map(|table| {
+            let source_table = table.name.display_sql_server();
+            let sqlite_table = table_names
+                .get(&table.name)
+                .map(|name| name.0.clone())
+                .unwrap_or_else(|| source_table.clone());
+            let mut constraints = table_constraints(table);
+            constraints.sort();
+            let indexes = indexes_by_table.remove(&source_table).unwrap_or_default();
+            TableReport {
+                source_table,
+                sqlite_table,
+                columns_detected: table.columns.len(),
+                constraints_detected: constraints.len(),
+                indexes_detected: indexes.len(),
+                columns: table
+                    .columns
+                    .iter()
+                    .map(|column| column.name.clone())
+                    .collect(),
+                constraints,
+                indexes,
+            }
+        })
+        .collect::<Vec<_>>();
+    tables.sort_by(|left, right| left.source_table.cmp(&right.source_table));
+
+    let mut diagnostics = schema
+        .diagnostics
+        .iter()
+        .map(|diagnostic| Diagnostic {
+            severity: report_severity(&diagnostic.severity),
+            message: diagnostic.message.clone(),
+        })
+        .chain(generated.diagnostics.iter().map(|diagnostic| Diagnostic {
+            severity: report_severity(&diagnostic.severity),
+            message: diagnostic.message.clone(),
+        }))
+        .collect::<Vec<_>>();
+    diagnostics.sort_by(|left, right| {
+        left.severity
+            .cmp(&right.severity)
+            .then_with(|| left.message.cmp(&right.message))
+    });
+
+    let unsupported_sql_server_features = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == DiagnosticSeverity::Unsupported)
+        .map(|diagnostic| diagnostic.message.clone())
+        .collect::<Vec<_>>();
+
+    Ok(ConversionReport {
+        input_schema_path: options.schema.display().to_string(),
+        data_directory: options.data_dir.display().to_string(),
+        output_database_path: options.out.display().to_string(),
+        schema: SchemaSummary {
+            tables_detected: tables.len(),
+            columns_detected: tables.iter().map(|table| table.columns_detected).sum(),
+            constraints_detected: tables.iter().map(|table| table.constraints_detected).sum(),
+            indexes_detected: schema.indexes.len(),
+            tables,
+        },
+        import: ImportReport {
+            tables: schema
+                .tables()
+                .iter()
+                .map(|table| {
+                    let sqlite_table = table_names
+                        .get(&table.name)
+                        .map(|name| name.0.clone())
+                        .unwrap_or_else(|| table.name.display_sql_server());
+                    TableImportReport {
+                        source_table: table.name.display_sql_server(),
+                        sqlite_table,
+                        csv_path: None,
+                        status: TableImportStatus::Skipped,
+                        rows_read: 0,
+                        rows_inserted: 0,
+                        rows_rejected: 0,
+                        diagnostics: vec![
+                            "CSV import was not run by this conversion path".to_owned()
+                        ],
+                    }
+                })
+                .collect(),
+            ..ImportReport::default()
+        },
+        validation: ValidationReport::default(),
+        diagnostics,
+        unsupported_sql_server_features,
+    })
+}
+
+fn table_constraints(table: &schema_model::TableDef) -> Vec<String> {
+    let mut constraints = Vec::new();
+    if table.primary_key.is_some() {
+        constraints.push("primary_key".to_owned());
+    }
+    constraints.extend(table.unique_constraints.iter().map(|c| {
+        format!(
+            "unique:{}",
+            c.name.clone().unwrap_or_else(|| c.columns.join("+"))
+        )
+    }));
+    constraints.extend(table.foreign_keys.iter().map(|c| {
+        format!(
+            "foreign_key:{}",
+            c.name.clone().unwrap_or_else(|| c.columns.join("+"))
+        )
+    }));
+    constraints.extend(table.check_constraints.iter().map(|c| {
+        format!(
+            "check:{}",
+            c.name.clone().unwrap_or_else(|| c.expression.clone())
+        )
+    }));
+    constraints.extend(table.columns.iter().filter_map(|column| {
+        column.default.as_ref().map(|c| {
+            format!(
+                "default:{}",
+                c.name.clone().unwrap_or_else(|| column.name.clone())
+            )
+        })
+    }));
+    constraints.extend(table.columns.iter().filter_map(|column| {
+        column.check.as_ref().map(|c| {
+            format!(
+                "check:{}",
+                c.name.clone().unwrap_or_else(|| column.name.clone())
+            )
+        })
+    }));
+    constraints
+}
+
+fn report_severity(severity: &schema_model::DiagnosticSeverity) -> DiagnosticSeverity {
+    match severity {
+        schema_model::DiagnosticSeverity::Warning => DiagnosticSeverity::Warning,
+        schema_model::DiagnosticSeverity::Error => DiagnosticSeverity::Error,
+        schema_model::DiagnosticSeverity::Unsupported => DiagnosticSeverity::Unsupported,
+    }
 }
 
 #[cfg(test)]
@@ -340,7 +540,75 @@ mod tests {
             .unwrap()
             .contains("CREATE TABLE \"T\""));
         assert!(report_dir.join("converted_schema.sql").exists());
-        assert!(report_dir.join("report.txt").exists());
-        assert!(report_dir.join("report.json").exists());
+        assert!(report_dir.join("conversion_report.txt").exists());
+        assert!(report_dir.join("conversion_report.json").exists());
+    }
+
+    #[test]
+    fn resolves_explicit_and_default_report_paths() {
+        let explicit = PathBuf::from("custom-reports");
+        let options = ConvertOptions {
+            schema: PathBuf::from("schema.sql"),
+            data_dir: PathBuf::from("data"),
+            out: PathBuf::from("target/out/app.sqlite"),
+            overwrite: false,
+            null_token: r"\N".to_string(),
+            table_name_mode: crate::app::cli::TableNameMode::SchemaPrefix,
+            emit_ddl: None,
+            report_dir: Some(explicit.clone()),
+            strict: false,
+            allow_missing_csv: false,
+            allow_extra_csv_columns: false,
+            skip_foreign_key_check: false,
+            dry_run: true,
+        };
+        assert_eq!(resolved_report_dir(&options), explicit);
+
+        let mut defaulted = options.clone();
+        defaulted.report_dir = None;
+        assert_eq!(
+            resolved_report_dir(&defaulted),
+            PathBuf::from("target/out/app_reports")
+        );
+    }
+
+    #[test]
+    fn conversion_report_orders_tables_and_diagnostics_deterministically() {
+        let schema = parser::parse(
+            "CREATE TABLE [dbo].[B] (Id int IDENTITY NOT NULL);\nCREATE TABLE [dbo].[A] (Id madeup NOT NULL);",
+        );
+        let options = ConvertOptions {
+            schema: PathBuf::from("schema.sql"),
+            data_dir: PathBuf::from("data"),
+            out: PathBuf::from("out.sqlite"),
+            overwrite: false,
+            null_token: r"\N".to_string(),
+            table_name_mode: crate::app::cli::TableNameMode::SchemaPrefix,
+            emit_ddl: None,
+            report_dir: None,
+            strict: false,
+            allow_missing_csv: false,
+            allow_extra_csv_columns: false,
+            skip_foreign_key_check: false,
+            dry_run: true,
+        };
+        let core_options = core_convert_options(&options);
+        let generated = ddl::generate(&schema, &core_options).unwrap();
+        let report = build_conversion_report(&options, &schema, &generated, &core_options).unwrap();
+
+        let table_names = report
+            .schema
+            .tables
+            .iter()
+            .map(|table| table.source_table.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(table_names, vec!["[dbo].[A]", "[dbo].[B]"]);
+
+        let diagnostics = report
+            .diagnostics
+            .iter()
+            .map(|diagnostic| (diagnostic.severity, diagnostic.message.as_str()))
+            .collect::<Vec<_>>();
+        assert!(diagnostics.windows(2).all(|pair| pair[0] <= pair[1]));
     }
 }
