@@ -10,3 +10,14 @@ name = "corrodeql"
 path = "src/main.rs"
 
 [dependencies]
+anyhow = "1"
+camino = "1"
+clap = { version = "4", features = ["derive"] }
+csv = "1"
+inquire = "0.7"
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = "0.3"
