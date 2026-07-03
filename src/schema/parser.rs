@@ -270,6 +270,7 @@ impl Parser {
         let mut columns = Vec::new();
         let mut pk = None;
         let mut unique_constraints = Vec::new();
+        let mut foreign_keys = Vec::new();
         let mut check_constraints = Vec::new();
         for fragment in fragments {
             let mut fragment_parser = Parser::from_fragment(fragment, self.line_offset);
@@ -278,22 +279,28 @@ impl Parser {
             }
             if fragment_parser.consume_kw(Keyword::Constraint) {
                 let cname = fragment_parser.ident();
-                if fragment_parser.consume_kw(Keyword::Primary) {
-                    pk = fragment_parser.parse_pk(cname);
-                } else if fragment_parser.consume_kw(Keyword::Unique) {
-                    if let Some(unique) = fragment_parser.parse_unique(cname) {
+                if fragment_parser.peek_is_kw(Keyword::Primary) {
+                    pk = fragment_parser.parse_table_primary_key_constraint(cname);
+                } else if fragment_parser.peek_is_kw(Keyword::Unique) {
+                    if let Some(unique) = fragment_parser.parse_table_unique_constraint(cname) {
                         unique_constraints.push(unique);
                     }
-                } else if fragment_parser.consume_kw(Keyword::Check) {
-                    check_constraints.push(CheckConstraintDef {
-                        name: cname,
-                        expression: fragment_parser.collect_parenthesized_expr(),
-                    });
+                } else if fragment_parser.peek_is_kw(Keyword::Check) {
+                    if let Some(check) = fragment_parser.parse_table_check_constraint(cname) {
+                        check_constraints.push(check);
+                    }
+                } else if fragment_parser.peek_is_kw(Keyword::Foreign) {
+                    if let Some(fk) = fragment_parser.parse_table_foreign_key_constraint(cname) {
+                        // Table-level foreign keys declared inline are valid CREATE TABLE fragments.
+                        // They are retained with ALTER TABLE foreign keys below.
+                        // The vector is attached after parsing the body.
+                        foreign_keys.push(fk);
+                    }
                 } else {
                     fragment_parser.unsupported_table_fragment(&name);
                 }
-            } else if fragment_parser.consume_kw(Keyword::Primary) {
-                pk = fragment_parser.parse_pk(None);
+            } else if fragment_parser.peek_is_kw(Keyword::Primary) {
+                pk = fragment_parser.parse_table_primary_key_constraint(None);
             } else if fragment_parser.peek().kind == TokenKind::Identifier {
                 if let Some(mut col) = fragment_parser.parse_column() {
                     if let Some(inline) = fragment_parser.inline_pk(&col) {
@@ -315,7 +322,7 @@ impl Parser {
             columns,
             primary_key: pk,
             unique_constraints,
-            foreign_keys: Vec::new(),
+            foreign_keys,
             check_constraints,
         })
     }
@@ -457,7 +464,11 @@ impl Parser {
             self.skip_stmt();
         }
     }
-    fn parse_pk(&mut self, name: Option<String>) -> Option<PrimaryKeyDef> {
+    fn parse_table_primary_key_constraint(
+        &mut self,
+        name: Option<String>,
+    ) -> Option<PrimaryKeyDef> {
+        self.consume_kw(Keyword::Primary);
         self.consume_kw(Keyword::Key);
         let clustered = if self.consume_kw(Keyword::Clustered) {
             Some(true)
@@ -466,29 +477,44 @@ impl Parser {
         } else {
             None
         };
-        if !self.expect_sym('(') {
-            return None;
-        };
-        let mut cols = Vec::new();
-        loop {
-            if let Some(c) = self.ident() {
-                cols.push(c)
-            };
-            while !self.is_eof() && !self.at_sym(',') && !self.at_sym(')') {
-                self.advance();
-            }
-            if self.consume_sym(',') {
-                continue;
-            }
-            break;
-        }
-        self.expect_sym(')');
+        let columns = self.parse_column_list()?;
+        self.diagnose_unsupported_constraint_tail("PRIMARY KEY");
         Some(PrimaryKeyDef {
             name,
-            columns: cols,
+            columns,
             clustered,
         })
     }
+
+    fn parse_table_unique_constraint(
+        &mut self,
+        name: Option<String>,
+    ) -> Option<UniqueConstraintDef> {
+        self.consume_kw(Keyword::Unique);
+        let _ = self.consume_kw(Keyword::Clustered) || self.consume_kw(Keyword::NonClustered);
+        let columns = self.parse_column_list()?;
+        self.diagnose_unsupported_constraint_tail("UNIQUE");
+        Some(UniqueConstraintDef { name, columns })
+    }
+
+    fn parse_table_check_constraint(&mut self, name: Option<String>) -> Option<CheckConstraintDef> {
+        self.consume_kw(Keyword::Check);
+        let expression = self.collect_parenthesized_expr();
+        self.diagnose_unsupported_constraint_tail("CHECK");
+        Some(CheckConstraintDef { name, expression })
+    }
+
+    fn parse_table_foreign_key_constraint(
+        &mut self,
+        name: Option<String>,
+    ) -> Option<ForeignKeyDef> {
+        self.consume_kw(Keyword::Foreign);
+        self.consume_kw(Keyword::Key);
+        let fk = self.parse_fk(name)?;
+        self.diagnose_unsupported_constraint_tail("FOREIGN KEY");
+        Some(fk)
+    }
+
     fn parse_type(&mut self) -> Option<SqlServerType> {
         use Keyword::*;
         let tok = self.advance().clone();
@@ -621,11 +647,6 @@ impl Parser {
             },
         }
     }
-    fn parse_unique(&mut self, name: Option<String>) -> Option<UniqueConstraintDef> {
-        let _ = self.consume_kw(Keyword::Clustered) || self.consume_kw(Keyword::NonClustered);
-        let columns = self.parse_column_list()?;
-        Some(UniqueConstraintDef { name, columns })
-    }
     fn parse_fk(&mut self, name: Option<String>) -> Option<ForeignKeyDef> {
         let columns = self.parse_column_list()?;
         self.consume_kw(Keyword::References);
@@ -646,15 +667,42 @@ impl Parser {
             return None;
         }
         let mut columns = Vec::new();
-        while !self.is_eof() && !self.consume_sym(')') {
+        loop {
+            if self.is_eof() || self.consume_sym(')') {
+                break;
+            }
             if let Some(column) = self.ident() {
                 columns.push(column);
             } else {
                 self.advance();
             }
-            self.consume_sym(',');
+            while !self.is_eof() && !self.at_sym(',') && !self.at_sym(')') {
+                // SQL Server allows per-column sort directions in key lists. They do not affect
+                // the schema model, so skip them (and any other per-column options) without
+                // treating them as additional columns.
+                self.advance();
+            }
+            if self.consume_sym(',') {
+                continue;
+            }
         }
         Some(columns)
+    }
+
+    fn diagnose_unsupported_constraint_tail(&mut self, constraint_kind: &str) {
+        if self.is_eof() {
+            return;
+        }
+        let mut trailing = Vec::new();
+        while !self.is_eof() {
+            trailing.push(self.advance().lexeme.clone());
+        }
+        if !trailing.is_empty() {
+            self.unsupported(&format!(
+                "unsupported {constraint_kind} constraint options ignored: {}",
+                trailing.join(" ")
+            ));
+        }
     }
     fn type_args(&mut self) -> Vec<String> {
         let mut a = Vec::new();
@@ -788,12 +836,15 @@ impl Parser {
         self.peek().kind == TokenKind::Symbol(c)
     }
     fn consume_kw(&mut self, k: Keyword) -> bool {
-        if self.peek().kind == TokenKind::Keyword(k) {
+        if self.peek_is_kw(k) {
             self.advance();
             true
         } else {
             false
         }
+    }
+    fn peek_is_kw(&self, k: Keyword) -> bool {
+        self.peek().kind == TokenKind::Keyword(k)
     }
     fn is_eof(&self) -> bool {
         self.peek().kind == TokenKind::Eof
@@ -820,7 +871,8 @@ fn is_max(v: Option<&String>) -> bool {
 }
 fn append_expr_token(output: &mut String, token: &Token) {
     let lexeme = token.lexeme.as_str();
-    let no_space_before = matches!(lexeme, "(" | ")" | "," | "." | ";");
+    let no_space_before =
+        matches!(lexeme, ")" | "," | "." | ";") || (lexeme == "(" && !output.ends_with(" IN"));
     let no_space_after_previous =
         output.ends_with('(') || output.ends_with('.') || output.is_empty();
     if !no_space_before && !no_space_after_previous {
@@ -952,6 +1004,67 @@ mod tests {
             s.tables[0].primary_key.as_ref().unwrap().columns,
             vec!["A", "B"]
         );
+    }
+
+    #[test]
+    fn parses_named_composite_clustered_primary_key_with_sort_directions() {
+        let s = parse(
+            "CREATE TABLE OrderLine (OrderId int, LineNumber int, CONSTRAINT [PK_OrderLine] PRIMARY KEY CLUSTERED ([OrderId] ASC, [LineNumber] ASC));",
+        );
+        let pk = s.tables[0].primary_key.as_ref().unwrap();
+        assert_eq!(pk.name.as_deref(), Some("PK_OrderLine"));
+        assert_eq!(pk.columns, vec!["OrderId", "LineNumber"]);
+        assert_eq!(pk.clustered, Some(true));
+        assert!(s.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn parses_named_unique_nonclustered_constraint_with_sort_direction() {
+        let s = parse(
+            "CREATE TABLE Customer (Email nvarchar(320), CONSTRAINT [UQ_Customer_Email] UNIQUE NONCLUSTERED ([Email] ASC));",
+        );
+        let unique = &s.tables[0].unique_constraints[0];
+        assert_eq!(unique.name.as_deref(), Some("UQ_Customer_Email"));
+        assert_eq!(unique.columns, vec!["Email"]);
+        assert!(s.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn parses_named_check_constraint_raw_expression() {
+        let s = parse(
+            "CREATE TABLE Customer (IsActive bit, CONSTRAINT [CK_Customer_IsActive] CHECK ([IsActive] IN ((0),(1))));",
+        );
+        let check = &s.tables[0].check_constraints[0];
+        assert_eq!(check.name.as_deref(), Some("CK_Customer_IsActive"));
+        assert_eq!(check.expression, "IsActive IN ((0),(1))");
+    }
+
+    #[test]
+    fn ignores_desc_sort_direction_without_corrupting_columns() {
+        let s =
+            parse("CREATE TABLE T (A int, B int, CONSTRAINT PK_T PRIMARY KEY (A DESC, B ASC));");
+        let pk = s.tables[0].primary_key.as_ref().unwrap();
+        assert_eq!(pk.columns, vec!["A", "B"]);
+    }
+
+    #[test]
+    fn stores_nonclustered_primary_key_and_ignores_clustered_unique() {
+        let s = parse("CREATE TABLE T (A int, B int, CONSTRAINT PK_T PRIMARY KEY NONCLUSTERED (A), CONSTRAINT UQ_T_B UNIQUE CLUSTERED (B DESC));");
+        assert_eq!(
+            s.tables[0].primary_key.as_ref().unwrap().clustered,
+            Some(false)
+        );
+        assert_eq!(s.tables[0].primary_key.as_ref().unwrap().columns, vec!["A"]);
+        assert_eq!(s.tables[0].unique_constraints[0].columns, vec!["B"]);
+    }
+
+    #[test]
+    fn diagnoses_unsupported_constraint_options_after_columns() {
+        let s = parse("CREATE TABLE T (A int, CONSTRAINT PK_T PRIMARY KEY (A) WITH (IGNORE_DUP_KEY = OFF) ON [PRIMARY]);");
+        assert_eq!(s.tables[0].primary_key.as_ref().unwrap().columns, vec!["A"]);
+        assert!(s.diagnostics.iter().any(|d| d
+            .message
+            .contains("unsupported PRIMARY KEY constraint options ignored")));
     }
 
     #[test]
