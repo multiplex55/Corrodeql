@@ -1,0 +1,4 @@
+OrderId,LineNumber,Sku,Description,Quantity,UnitPrice
+1001,1,BOOK-001,Intro to Algorithms,1,89.99
+1001,2,MUG-ADA,Ada mug,2,12.50
+1002,1,KEY-GRACE,Grace keychain,3,5.00

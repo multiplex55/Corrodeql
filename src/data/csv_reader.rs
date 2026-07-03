@@ -169,6 +169,7 @@ fn validation_error(message: String) -> Error {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use camino::Utf8PathBuf;
@@ -177,6 +178,8 @@ mod tests {
     use crate::schema::model::{ColumnDef, SqlServerType, TableDef, TableName};
 
     use super::*;
+
+    static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     fn col(name: &str, data_type: SqlServerType) -> ColumnDef {
         ColumnDef {
@@ -205,7 +208,9 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path = std::env::temp_dir().join(format!("corrodeql-csv-{name}-{unique}.csv"));
+        let counter = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path =
+            std::env::temp_dir().join(format!("corrodeql-csv-{name}-{unique}-{counter}.csv"));
         fs::write(&path, contents).unwrap();
         Utf8PathBuf::from_path_buf(path).unwrap()
     }

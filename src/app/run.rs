@@ -200,9 +200,54 @@ pub fn run_validate(args: ValidateArgs) -> Result<()> {
     Ok(())
 }
 
-/// Placeholder implementation for `corrodeql init-example`.
-pub fn run_init_example(_args: InitExampleArgs) -> Result<()> {
-    println!("init-example is not yet implemented; no files were written");
+const BASIC_EXAMPLE_FILES: &[(&str, &str)] = &[
+    (
+        "schema.sql",
+        include_str!("../../examples/basic/schema.sql"),
+    ),
+    (
+        "data/dbo.Customer.csv",
+        include_str!("../../examples/basic/data/dbo.Customer.csv"),
+    ),
+    (
+        "data/dbo.Order.csv",
+        include_str!("../../examples/basic/data/dbo.Order.csv"),
+    ),
+    (
+        "data/dbo.OrderLine.csv",
+        include_str!("../../examples/basic/data/dbo.OrderLine.csv"),
+    ),
+];
+
+/// Writes the bundled `examples/basic` project to disk.
+pub fn run_init_example(args: InitExampleArgs) -> Result<()> {
+    let out_dir = args
+        .out_dir
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("output directory is required; pass --out-dir"))?;
+
+    let existing = BASIC_EXAMPLE_FILES
+        .iter()
+        .map(|(relative, _)| out_dir.join(relative))
+        .find(|path| path.exists());
+    if let Some(path) = existing {
+        if !args.overwrite {
+            bail!(
+                "example file already exists (use --overwrite to replace it): {}",
+                path.display()
+            );
+        }
+    }
+
+    for (relative, contents) in BASIC_EXAMPLE_FILES {
+        let path = out_dir.join(relative);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(path, contents)?;
+    }
+
+    println!("created example project: {}", out_dir.display());
     Ok(())
 }
 
