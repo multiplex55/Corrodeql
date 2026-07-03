@@ -1,0 +1,12 @@
+[package]
+name = "corrodeql"
+version = "0.1.0"
+edition = "2021"
+description = "CLI tooling for CorrodeQL."
+license-file = "LICENSE"
+
+[[bin]]
+name = "corrodeql"
+path = "src/main.rs"
+
+[dependencies]
