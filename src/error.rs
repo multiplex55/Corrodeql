@@ -22,4 +22,8 @@ pub enum Error {
     },
     #[error("validation error: {message}")]
     Validation { message: String },
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    #[error(transparent)]
+    Sqlite(#[from] rusqlite::Error),
 }

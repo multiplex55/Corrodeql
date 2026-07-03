@@ -42,6 +42,29 @@ pub fn generate(schema: &DatabaseSchema, options: &ConvertOptions) -> Result<Gen
     Ok(generated)
 }
 
+/// Returns the full converted SQLite schema SQL as a deterministic string.
+pub fn schema_sql(schema: &DatabaseSchema, options: &ConvertOptions) -> Result<String> {
+    Ok(generate(schema, options)?.to_sql())
+}
+
+impl GeneratedDdl {
+    /// Renders all generated statements into executable SQLite SQL.
+    pub fn to_sql(&self) -> String {
+        if self.statements.is_empty() {
+            return String::new();
+        }
+
+        let mut sql = self
+            .statements
+            .iter()
+            .map(|statement| statement.0.as_str())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        sql.push('\n');
+        sql
+    }
+}
+
 /// Quotes a SQLite identifier using double quotes.
 pub fn quote_identifier(identifier: &str) -> String {
     format!("\"{}\"", identifier.replace('"', "\"\""))
@@ -514,5 +537,32 @@ mod tests {
             .diagnostics
             .iter()
             .any(|d| d.severity == DiagnosticSeverity::Warning && d.message.contains("default")));
+    }
+
+    #[test]
+    fn schema_sql_is_deterministic_across_runs() {
+        let schema = DatabaseSchema {
+            tables: vec![table(
+                "dbo",
+                "Customer",
+                vec![
+                    col("Id", SqlServerType::Int, false),
+                    col(
+                        "Name",
+                        SqlServerType::NVarChar {
+                            length: Some(50),
+                            max: false,
+                        },
+                        true,
+                    ),
+                ],
+            )],
+            indexes: vec![],
+            diagnostics: vec![],
+        };
+        let first = schema_sql(&schema, &ConvertOptions::default()).unwrap();
+        let second = schema_sql(&schema, &ConvertOptions::default()).unwrap();
+        assert_eq!(first, second);
+        assert!(first.ends_with('\n'));
     }
 }
