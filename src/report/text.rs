@@ -43,6 +43,37 @@ pub fn render(report: &ConversionReport) -> String {
         }
     }
 
+    if !report.statements.detected.is_empty()
+        || !report.statements.ignored.is_empty()
+        || !report.statements.warnings.is_empty()
+    {
+        output.push_str("\nStatement Classification\n");
+        for entry in &report.statements.detected {
+            output.push_str(&format!(
+                "Detected: {} {} statement{}\n",
+                entry.count,
+                entry.kind,
+                if entry.count == 1 { "" } else { "s" }
+            ));
+        }
+        for entry in &report.statements.ignored {
+            output.push_str(&format!(
+                "Ignored: {} {} statement{}\n",
+                entry.count,
+                entry.kind,
+                if entry.count == 1 { "" } else { "s" }
+            ));
+        }
+        for entry in &report.statements.warnings {
+            output.push_str(&format!(
+                "Warnings: {} {} statement{}\n",
+                entry.count,
+                entry.kind,
+                if entry.count == 1 { "" } else { "s" }
+            ));
+        }
+    }
+
     output.push_str("\nImport Summary\n");
     output.push_str(&format!(
         "Rows read={}, inserted={}, rejected={}\n",

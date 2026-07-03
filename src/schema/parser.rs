@@ -1,6 +1,8 @@
+use super::classifier::{classify_batches, summarize, ClassifiedStatement, StatementKind};
 use super::lexer::{lex, Keyword, Token, TokenKind};
 use super::model::*;
 use super::preprocessor::{preprocess, SqlBatch};
+use crate::config::options::ConvertOptions;
 use crate::mssql::{
     defaults::normalize_default,
     identifiers::{object_name_from_identifiers, parse_identifier_token, Identifier},
@@ -10,6 +12,10 @@ use crate::mssql::{
 /// Parses schema input into a schema model. Recoverable unsupported statements
 /// are reported in diagnostics and skipped.
 pub fn parse(input: impl AsRef<str>) -> Schema {
+    parse_with_options(input, &ConvertOptions::default())
+}
+
+pub fn parse_with_options(input: impl AsRef<str>, options: &ConvertOptions) -> Schema {
     let batches = match preprocess(input.as_ref()) {
         Ok(batches) => batches,
         Err(diagnostics) => {
@@ -17,20 +23,27 @@ pub fn parse(input: impl AsRef<str>) -> Schema {
                 tables: Vec::new(),
                 indexes: Vec::new(),
                 diagnostics,
+                statement_summary: Default::default(),
             }
         }
     };
-    parse_batches(&batches)
+    parse_batches(&batches, options)
 }
 
-fn parse_batches(batches: &[SqlBatch]) -> Schema {
+fn parse_batches(batches: &[SqlBatch], options: &ConvertOptions) -> Schema {
     let mut tables = Vec::new();
     let mut indexes = Vec::new();
     let mut diagnostics = Vec::new();
-    for batch in batches {
-        let mut parser = Parser::new(batch);
-        parser.parse_schema_into(&mut tables, &mut indexes);
-        diagnostics.extend(parser.diagnostics);
+    let statements = classify_batches(batches);
+    let statement_summary = summarize(&statements);
+    for statement in &statements {
+        handle_classified_statement(
+            statement,
+            options,
+            &mut tables,
+            &mut indexes,
+            &mut diagnostics,
+        );
     }
     for table in &tables {
         for column in &table.columns {
@@ -44,6 +57,53 @@ fn parse_batches(batches: &[SqlBatch]) -> Schema {
         tables,
         indexes,
         diagnostics,
+        statement_summary,
+    }
+}
+
+fn handle_classified_statement(
+    statement: &ClassifiedStatement,
+    options: &ConvertOptions,
+    tables: &mut Vec<TableDef>,
+    indexes: &mut Vec<IndexDef>,
+    diagnostics: &mut Vec<SchemaDiagnostic>,
+) {
+    match statement.kind {
+        StatementKind::CreateTable
+        | StatementKind::AlterTableAddConstraint
+        | StatementKind::CreateIndex => {
+            let mut parser = Parser::new(&statement.batch);
+            parser.parse_schema_into(tables, indexes);
+            diagnostics.extend(parser.diagnostics);
+        }
+        StatementKind::CreateView
+        | StatementKind::CreateTrigger
+        | StatementKind::CreateProcedure
+        | StatementKind::SetOption
+        | StatementKind::UseDatabase => {
+            diagnostics.push(SchemaDiagnostic {
+                severity: if options.strict {
+                    DiagnosticSeverity::Error
+                } else {
+                    DiagnosticSeverity::Unsupported
+                },
+                message: format!("{} statement ignored", statement.kind.label()),
+                line: Some(statement.line_start),
+                column: Some(1),
+            });
+        }
+        StatementKind::Unknown => {
+            diagnostics.push(SchemaDiagnostic {
+                severity: if options.strict {
+                    DiagnosticSeverity::Error
+                } else {
+                    DiagnosticSeverity::Warning
+                },
+                message: "unknown statement skipped".to_owned(),
+                line: Some(statement.line_start),
+                column: Some(1),
+            });
+        }
     }
 }
 
@@ -739,12 +799,50 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_statements_emit_diagnostics() {
-        let s = parse("ALTER TABLE T ADD X int; CREATE TABLE T (Id int);");
+    fn unsupported_object_warns_in_non_strict_mode() {
+        let s = parse("CREATE VIEW V AS SELECT 1; CREATE TABLE T (Id int);");
         assert_eq!(s.tables.len(), 1);
         assert!(s
             .diagnostics
             .iter()
             .any(|d| d.severity == DiagnosticSeverity::Unsupported));
+    }
+
+    #[test]
+    fn unknown_statement_fails_in_strict_mode() {
+        let options = ConvertOptions {
+            strict: true,
+            ..ConvertOptions::default()
+        };
+        let s = parse_with_options("SELECT 1; CREATE TABLE T (Id int);", &options);
+        assert_eq!(s.tables.len(), 1);
+        assert!(s
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == DiagnosticSeverity::Error && d.message.contains("unknown")));
+    }
+
+    #[test]
+    fn mixed_schema_file_produces_classification_summary_counts() {
+        let s = parse("CREATE TABLE T (Id int); CREATE INDEX IX_T_Id ON T (Id); CREATE PROCEDURE P AS SELECT 1; SELECT 1;");
+        assert_eq!(s.statement_summary.detected_count, 2);
+        assert_eq!(s.statement_summary.ignored_count, 2);
+        assert_eq!(s.statement_summary.warning_count, 2);
+        assert_eq!(
+            s.statement_summary
+                .detected
+                .get(&StatementKind::CreateTable),
+            Some(&1)
+        );
+        assert_eq!(
+            s.statement_summary
+                .ignored
+                .get(&StatementKind::CreateProcedure),
+            Some(&1)
+        );
+        assert_eq!(
+            s.statement_summary.warnings.get(&StatementKind::Unknown),
+            Some(&1)
+        );
     }
 }

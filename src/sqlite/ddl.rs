@@ -363,6 +363,7 @@ mod tests {
             )],
             indexes: vec![],
             diagnostics: vec![],
+            statement_summary: Default::default(),
         };
         assert_eq!(
             ddl(schema).statements[0].0,
@@ -388,7 +389,8 @@ mod tests {
         assert!(ddl(DatabaseSchema {
             tables: vec![t],
             indexes: vec![],
-            diagnostics: vec![]
+            diagnostics: vec![],
+            statement_summary: Default::default(),
         })
         .statements[0]
             .0
@@ -414,7 +416,8 @@ mod tests {
         assert!(ddl(DatabaseSchema {
             tables: vec![parent, child],
             indexes: vec![],
-            diagnostics: vec![]
+            diagnostics: vec![],
+            statement_summary: Default::default(),
         })
         .statements[1]
             .0
@@ -444,7 +447,8 @@ mod tests {
         assert!(ddl(DatabaseSchema {
             tables: vec![t],
             indexes: vec![],
-            diagnostics: vec![]
+            diagnostics: vec![],
+            statement_summary: Default::default(),
         })
         .statements[0]
             .0
@@ -477,7 +481,8 @@ mod tests {
             ddl(DatabaseSchema {
                 tables: vec![t],
                 indexes: vec![index],
-                diagnostics: vec![]
+                diagnostics: vec![],
+                statement_summary: Default::default(),
             })
             .statements[1]
                 .0,
@@ -496,6 +501,7 @@ mod tests {
             )],
             indexes: vec![],
             diagnostics: vec![],
+            statement_summary: Default::default(),
         };
         assert!(ddl(schema).statements[0]
             .0
@@ -512,6 +518,7 @@ mod tests {
             )],
             indexes: vec![],
             diagnostics: vec![],
+            statement_summary: Default::default(),
         };
         let mut options = ConvertOptions::default();
         options.table_name_mode = TableNameMode::DropDbo;
@@ -535,6 +542,7 @@ mod tests {
             tables: vec![table("dbo", "Audit", vec![c])],
             indexes: vec![],
             diagnostics: vec![],
+            statement_summary: Default::default(),
         });
         assert!(!generated.statements[0].0.contains("DEFAULT"));
         assert!(generated
@@ -563,6 +571,7 @@ mod tests {
             )],
             indexes: vec![],
             diagnostics: vec![],
+            statement_summary: Default::default(),
         };
         let first = schema_sql(&schema, &ConvertOptions::default()).unwrap();
         let second = schema_sql(&schema, &ConvertOptions::default()).unwrap();

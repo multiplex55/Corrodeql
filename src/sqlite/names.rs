@@ -114,6 +114,7 @@ mod tests {
             tables: vec![table("dbo", "Customer"), table("sales", "Customer")],
             indexes: Vec::new(),
             diagnostics: Vec::new(),
+            statement_summary: Default::default(),
         };
 
         let error = table_names_for_schema(&schema, TableNameMode::TableOnly).unwrap_err();
@@ -128,6 +129,7 @@ mod tests {
             tables: vec![table("dbo", "Customer"), table("sales", "Customer")],
             indexes: Vec::new(),
             diagnostics: Vec::new(),
+            statement_summary: Default::default(),
         };
 
         let names = table_names_for_schema(&schema, TableNameMode::SchemaPrefix).unwrap();

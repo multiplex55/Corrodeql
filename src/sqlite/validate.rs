@@ -281,6 +281,7 @@ mod tests {
             tables,
             indexes,
             diagnostics: vec![],
+            statement_summary: Default::default(),
         }
     }
 

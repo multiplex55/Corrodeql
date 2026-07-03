@@ -13,7 +13,8 @@ use crate::report::{
     json,
     model::{
         ConversionReport, Diagnostic, DiagnosticSeverity, ImportReport, SchemaSummary,
-        TableImportReport, TableImportStatus, TableReport, ValidationReport,
+        StatementKindReport, StatementReport, TableImportReport, TableImportStatus, TableReport,
+        ValidationReport,
     },
     text,
 };
@@ -61,13 +62,13 @@ fn run_convert_with_options(options: ConvertOptions) -> Result<()> {
 
     let schema_text = fs::read_to_string(&options.schema)
         .with_context(|| format!("failed to read schema file {}", options.schema.display()))?;
-    let parsed_schema = parser::parse(&schema_text);
+    let core_options = core_convert_options(&options);
+    let parsed_schema = parser::parse_with_options(&schema_text, &core_options);
     if parsed_schema
         .diagnostics
         .iter()
         .any(|diagnostic| diagnostic.severity == schema_model::DiagnosticSeverity::Error)
     {
-        let core_options = core_convert_options(&options);
         let generated = ddl::generate(&parsed_schema, &core_options).unwrap_or_default();
         write_convert_artifacts(
             &options,
@@ -81,7 +82,6 @@ fn run_convert_with_options(options: ConvertOptions) -> Result<()> {
     }
 
     let schema = crate::mssql::normalize(parsed_schema);
-    let core_options = core_convert_options(&options);
     let generated = ddl::generate(&schema, &core_options)?;
 
     if options.dry_run {
@@ -552,6 +552,7 @@ fn build_conversion_report(
         input_schema_path: options.schema.display().to_string(),
         data_directory: options.data_dir.display().to_string(),
         output_database_path: options.out.display().to_string(),
+        statements: statement_report(&schema.statement_summary),
         schema: SchemaSummary {
             tables_detected: tables.len(),
             columns_detected: tables.iter().map(|table| table.columns_detected).sum(),
@@ -566,6 +567,27 @@ fn build_conversion_report(
         diagnostics,
         unsupported_sql_server_features,
     })
+}
+
+fn statement_report(summary: &crate::schema::classifier::ClassificationSummary) -> StatementReport {
+    fn entries(
+        map: &std::collections::BTreeMap<crate::schema::classifier::StatementKind, usize>,
+    ) -> Vec<StatementKindReport> {
+        map.iter()
+            .map(|(kind, count)| StatementKindReport {
+                kind: kind.label().to_owned(),
+                count: *count,
+            })
+            .collect()
+    }
+    StatementReport {
+        detected_count: summary.detected_count,
+        ignored_count: summary.ignored_count,
+        warning_count: summary.warning_count,
+        detected: entries(&summary.detected),
+        ignored: entries(&summary.ignored),
+        warnings: entries(&summary.warnings),
+    }
 }
 
 fn sorted_import_report(mut report: ImportReport) -> ImportReport {

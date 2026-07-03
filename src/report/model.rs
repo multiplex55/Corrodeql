@@ -9,6 +9,7 @@ pub struct ConversionReport {
     pub data_directory: String,
     pub output_database_path: String,
     pub schema: SchemaSummary,
+    pub statements: StatementReport,
     pub import: ImportReport,
     pub validation: ValidationReport,
     pub diagnostics: Vec<Diagnostic>,
@@ -17,6 +18,23 @@ pub struct ConversionReport {
 
 /// Backwards-compatible report type name.
 pub type Report = ConversionReport;
+
+/// Summary of classified SQL statements before deep parsing.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StatementReport {
+    pub detected_count: usize,
+    pub ignored_count: usize,
+    pub warning_count: usize,
+    pub detected: Vec<StatementKindReport>,
+    pub ignored: Vec<StatementKindReport>,
+    pub warnings: Vec<StatementKindReport>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StatementKindReport {
+    pub kind: String,
+    pub count: usize,
+}
 
 /// Summary of parsed schema objects.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

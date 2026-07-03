@@ -195,6 +195,7 @@ mod tests {
             tables,
             indexes: Vec::new(),
             diagnostics: Vec::new(),
+            statement_summary: Default::default(),
         }
     }
 
