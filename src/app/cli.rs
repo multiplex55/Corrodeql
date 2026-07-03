@@ -114,6 +114,18 @@ pub struct ValidateArgs {
     /// Directory containing CSV files to validate. If omitted, interactive prompting may ask for it.
     #[arg(long, value_name = "DIR")]
     pub data_dir: Option<PathBuf>,
+
+    /// Existing SQLite database file to validate.
+    #[arg(long, value_name = "FILE", alias = "out")]
+    pub db: Option<PathBuf>,
+
+    /// Strategy used when the SQLite database was created from SQL Server names.
+    #[arg(long, value_enum, value_name = "schema-prefix|drop-dbo|table-only")]
+    pub table_name_mode: Option<TableNameMode>,
+
+    /// Skip SQLite foreign-key validation checks.
+    #[arg(long)]
+    pub skip_foreign_key_check: bool,
 }
 
 /// Arguments for `corrodeql init-example`.
