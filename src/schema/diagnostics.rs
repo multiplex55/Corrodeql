@@ -1,3 +1,1 @@
-/// A schema diagnostic message.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Diagnostic;
+pub use super::model::{DiagnosticSeverity, SchemaDiagnostic as Diagnostic};
