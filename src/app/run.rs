@@ -559,11 +559,34 @@ fn build_conversion_report(
             indexes_detected: schema.indexes.len(),
             tables,
         },
-        import: import_report.unwrap_or_else(|| skipped_import_report(schema, &table_names)),
-        validation,
+        import: sorted_import_report(
+            import_report.unwrap_or_else(|| skipped_import_report(schema, &table_names)),
+        ),
+        validation: sorted_validation_report(validation),
         diagnostics,
         unsupported_sql_server_features,
     })
+}
+
+fn sorted_import_report(mut report: ImportReport) -> ImportReport {
+    report.tables.sort_by(|left, right| {
+        left.source_table
+            .cmp(&right.source_table)
+            .then_with(|| left.sqlite_table.cmp(&right.sqlite_table))
+    });
+    for table in &mut report.tables {
+        table.diagnostics.sort();
+    }
+    report
+}
+
+fn sorted_validation_report(mut report: ValidationReport) -> ValidationReport {
+    report.diagnostics.sort_by(|left, right| {
+        left.severity
+            .cmp(&right.severity)
+            .then_with(|| left.message.cmp(&right.message))
+    });
+    report
 }
 
 fn skipped_import_report(

@@ -117,3 +117,94 @@ fn parse_hex_blob(value: &str) -> Result<Value, String> {
     }
     Ok(Value::Blob(bytes))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn column(name: &str, data_type: SqlServerType) -> ColumnDef {
+        ColumnDef {
+            name: name.to_owned(),
+            data_type,
+            nullable: true,
+            identity: false,
+            default: None,
+            check: None,
+        }
+    }
+
+    fn table() -> TableName {
+        TableName::new(Some("dbo".to_owned()), "Widget")
+    }
+
+    #[test]
+    fn converts_null_token_before_type_parsing() {
+        let value =
+            convert_csv_value(&table(), &column("Id", SqlServerType::Int), 2, r"\N", None).unwrap();
+        assert_eq!(value, Value::Null);
+    }
+
+    #[test]
+    fn converts_supported_scalar_values() {
+        assert_eq!(
+            convert_csv_value(&table(), &column("Id", SqlServerType::Int), 2, "42", None).unwrap(),
+            Value::Integer(42)
+        );
+        assert_eq!(
+            convert_csv_value(
+                &table(),
+                &column("Flag", SqlServerType::Bit),
+                2,
+                "true",
+                None
+            )
+            .unwrap(),
+            Value::Integer(1)
+        );
+        assert_eq!(
+            convert_csv_value(
+                &table(),
+                &column(
+                    "Amount",
+                    SqlServerType::Decimal {
+                        precision: None,
+                        scale: None
+                    }
+                ),
+                2,
+                "12.3400",
+                None,
+            )
+            .unwrap(),
+            Value::Text("12.3400".to_owned())
+        );
+        assert_eq!(
+            convert_csv_value(
+                &table(),
+                &column(
+                    "Payload",
+                    SqlServerType::VarBinary {
+                        length: None,
+                        max: true
+                    }
+                ),
+                2,
+                "0x0A0b",
+                None,
+            )
+            .unwrap(),
+            Value::Blob(vec![10, 11])
+        );
+    }
+
+    #[test]
+    fn reports_column_and_row_for_invalid_value() {
+        let error = convert_csv_value(&table(), &column("Id", SqlServerType::Int), 7, "oops", None)
+            .unwrap_err();
+        assert_eq!(error.table, table());
+        assert_eq!(error.column, "Id");
+        assert_eq!(error.row_number, 7);
+        assert_eq!(error.original_value, "oops");
+        assert_eq!(error.reason, "expected integer");
+    }
+}
