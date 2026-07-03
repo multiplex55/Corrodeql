@@ -107,6 +107,72 @@ fn handle_classified_statement(
     }
 }
 
+#[allow(dead_code)]
+pub(crate) fn split_top_level_commas(input: &str) -> Vec<&str> {
+    let mut fragments = Vec::new();
+    let mut start = 0usize;
+    let mut depth = 0i32;
+    let mut chars = input.char_indices().peekable();
+
+    while let Some((idx, ch)) = chars.next() {
+        match ch {
+            '\'' => {
+                while let Some((_, string_ch)) = chars.next() {
+                    if string_ch == '\'' {
+                        if matches!(chars.peek(), Some((_, '\''))) {
+                            chars.next();
+                        } else {
+                            break;
+                        }
+                    }
+                }
+            }
+            '[' => {
+                while let Some((_, ident_ch)) = chars.next() {
+                    if ident_ch == ']' {
+                        if matches!(chars.peek(), Some((_, ']'))) {
+                            chars.next();
+                        } else {
+                            break;
+                        }
+                    }
+                }
+            }
+            '-' if matches!(chars.peek(), Some((_, '-'))) => {
+                chars.next();
+                while let Some((_, comment_ch)) = chars.next() {
+                    if comment_ch == '\n' {
+                        break;
+                    }
+                }
+            }
+            '/' if matches!(chars.peek(), Some((_, '*'))) => {
+                chars.next();
+                let mut previous = '\0';
+                for (_, comment_ch) in chars.by_ref() {
+                    if previous == '*' && comment_ch == '/' {
+                        break;
+                    }
+                    previous = comment_ch;
+                }
+            }
+            '(' => depth += 1,
+            ')' if depth > 0 => depth -= 1,
+            ',' if depth == 0 => {
+                fragments.push(input[start..idx].trim());
+                start = idx + ch.len_utf8();
+            }
+            _ => {}
+        }
+    }
+
+    let tail = input[start..].trim();
+    if !tail.is_empty() || input.is_empty() {
+        fragments.push(tail);
+    }
+    fragments
+}
+
 struct Parser {
     tokens: Vec<Token>,
     pos: usize,
@@ -121,6 +187,23 @@ impl Parser {
             pos: 0,
             diagnostics: Vec::new(),
             line_offset: batch.line_start.saturating_sub(1),
+        }
+    }
+
+    fn from_fragment(mut tokens: Vec<Token>, line_offset: usize) -> Self {
+        tokens.push(Token {
+            kind: TokenKind::Eof,
+            lexeme: String::new(),
+            line: tokens.last().map_or(1, |token| token.line),
+            column: tokens
+                .last()
+                .map_or(1, |token| token.column + token.lexeme.len()),
+        });
+        Self {
+            tokens,
+            pos: 0,
+            diagnostics: Vec::new(),
+            line_offset,
         }
     }
     fn parse_schema_into(&mut self, tables: &mut Vec<TableDef>, indexes: &mut Vec<IndexDef>) {
@@ -183,40 +266,48 @@ impl Parser {
         if !self.expect_sym('(') {
             return None;
         }
+        let fragments = self.collect_table_body_fragments();
         let mut columns = Vec::new();
         let mut pk = None;
         let mut unique_constraints = Vec::new();
         let mut check_constraints = Vec::new();
-        while !self.is_eof() && !self.consume_sym(')') {
-            if self.consume_kw(Keyword::Constraint) {
-                let cname = self.ident();
-                if self.consume_kw(Keyword::Primary) {
-                    pk = self.parse_pk(cname);
-                } else if self.consume_kw(Keyword::Unique) {
-                    if let Some(unique) = self.parse_unique(cname) {
+        for fragment in fragments {
+            let mut fragment_parser = Parser::from_fragment(fragment, self.line_offset);
+            if fragment_parser.is_eof() {
+                continue;
+            }
+            if fragment_parser.consume_kw(Keyword::Constraint) {
+                let cname = fragment_parser.ident();
+                if fragment_parser.consume_kw(Keyword::Primary) {
+                    pk = fragment_parser.parse_pk(cname);
+                } else if fragment_parser.consume_kw(Keyword::Unique) {
+                    if let Some(unique) = fragment_parser.parse_unique(cname) {
                         unique_constraints.push(unique);
                     }
-                } else if self.consume_kw(Keyword::Check) {
+                } else if fragment_parser.consume_kw(Keyword::Check) {
                     check_constraints.push(CheckConstraintDef {
                         name: cname,
-                        expression: self.collect_parenthesized_expr(),
+                        expression: fragment_parser.collect_parenthesized_expr(),
                     });
                 } else {
-                    self.unsupported("unsupported table constraint");
-                    self.skip_to_comma_or_rparen();
+                    fragment_parser.unsupported_table_fragment(&name);
                 }
-            } else if self.consume_kw(Keyword::Primary) {
-                pk = self.parse_pk(None);
-            } else if let Some(mut col) = self.parse_column() {
-                if let Some(inline) = self.inline_pk(&col) {
-                    pk = Some(inline);
-                    col.check = None;
+            } else if fragment_parser.consume_kw(Keyword::Primary) {
+                pk = fragment_parser.parse_pk(None);
+            } else if fragment_parser.peek().kind == TokenKind::Identifier {
+                if let Some(mut col) = fragment_parser.parse_column() {
+                    if let Some(inline) = fragment_parser.inline_pk(&col) {
+                        pk = Some(inline);
+                        col.check = None;
+                    }
+                    columns.push(col);
+                } else {
+                    fragment_parser.unsupported_table_fragment(&name);
                 }
-                columns.push(col);
             } else {
-                self.skip_to_comma_or_rparen();
+                fragment_parser.unsupported_table_fragment(&name);
             }
-            self.consume_sym(',');
+            self.diagnostics.extend(fragment_parser.diagnostics);
         }
         self.skip_stmt_tail();
         Some(TableDef {
@@ -227,6 +318,34 @@ impl Parser {
             foreign_keys: Vec::new(),
             check_constraints,
         })
+    }
+
+    fn collect_table_body_fragments(&mut self) -> Vec<Vec<Token>> {
+        let mut fragments = Vec::new();
+        let mut current = Vec::new();
+        let mut depth = 0i32;
+        while !self.is_eof() {
+            if self.at_sym('(') {
+                depth += 1;
+                current.push(self.advance().clone());
+            } else if self.at_sym(')') {
+                if depth == 0 {
+                    self.advance();
+                    if !current.is_empty() {
+                        fragments.push(current);
+                    }
+                    break;
+                }
+                depth -= 1;
+                current.push(self.advance().clone());
+            } else if depth == 0 && self.at_sym(',') {
+                self.advance();
+                fragments.push(std::mem::take(&mut current));
+            } else {
+                current.push(self.advance().clone());
+            }
+        }
+        fragments
     }
     fn parse_table_name(&mut self) -> Option<TableName> {
         let mut parts = Vec::new();
@@ -552,10 +671,17 @@ impl Parser {
             self.advance();
         }
     }
-    fn skip_to_comma_or_rparen(&mut self) {
-        while !self.is_eof() && !self.at_sym(',') && !self.at_sym(')') {
-            self.advance();
-        }
+
+    fn unsupported_table_fragment(&mut self, table: &TableName) {
+        self.diagnostics.push(SchemaDiagnostic {
+            severity: DiagnosticSeverity::Unsupported,
+            message: format!(
+                "unsupported CREATE TABLE fragment in table {}",
+                table.display_sql_server()
+            ),
+            line: Some(self.peek().line + self.line_offset),
+            column: Some(self.peek().column),
+        });
     }
     fn unsupported(&mut self, msg: &str) {
         self.diagnostics.push(SchemaDiagnostic {
@@ -635,6 +761,39 @@ fn is_max(v: Option<&String>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn split_top_level_commas_keeps_nested_decimal_arguments() {
+        assert_eq!(
+            split_top_level_commas("Amount decimal(18,2), Name int"),
+            vec!["Amount decimal(18,2)", "Name int"]
+        );
+    }
+
+    #[test]
+    fn split_top_level_commas_keeps_string_default_with_comma() {
+        assert_eq!(
+            split_top_level_commas("Name varchar(50) DEFAULT ('hello, world'), Id int"),
+            vec!["Name varchar(50) DEFAULT ('hello, world')", "Id int"]
+        );
+    }
+
+    #[test]
+    fn split_top_level_commas_keeps_check_in_list() {
+        assert_eq!(
+            split_top_level_commas("CHECK ([Amount] IN (1,2,3)), Id int"),
+            vec!["CHECK ([Amount] IN (1,2,3))", "Id int"]
+        );
+    }
+
+    #[test]
+    fn split_top_level_commas_keeps_bracketed_names_and_strings_with_commas() {
+        assert_eq!(
+            split_top_level_commas("[Last, First] nvarchar(100), [Note] varchar(100) DEFAULT 'a,b', [Esc]]aped,Name] int"),
+            vec!["[Last, First] nvarchar(100)", "[Note] varchar(100) DEFAULT 'a,b'", "[Esc]]aped,Name] int"]
+        );
+    }
+
     #[test]
     fn parses_simple_create_table() {
         let s = parse("CREATE TABLE [dbo].[Customer] ([Id] int NOT NULL);");
@@ -664,6 +823,78 @@ mod tests {
             s.tables[0].primary_key.as_ref().unwrap().columns,
             vec!["A", "B"]
         );
+    }
+
+    #[test]
+    fn parses_create_table_body_as_top_level_fragments() {
+        let s = parse("CREATE TABLE [dbo].[Invoice] ([Id] int NOT NULL, [Amount] decimal(18,2) NOT NULL DEFAULT (0), CONSTRAINT [PK_Invoice] PRIMARY KEY ([Id]), CONSTRAINT [CK_Invoice_Amount] CHECK ([Amount] IN (1,2,3)));");
+        let table = &s.tables[0];
+        assert_eq!(table.name, TableName::new(Some("dbo".into()), "Invoice"));
+        assert_eq!(
+            table
+                .columns
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Id", "Amount"]
+        );
+        assert_eq!(table.primary_key.as_ref().unwrap().columns, vec!["Id"]);
+        assert_eq!(table.check_constraints.len(), 1);
+    }
+
+    #[test]
+    fn parses_decimal_type_preserving_precision_and_scale() {
+        let s = parse("CREATE TABLE T (Amount decimal(18,2));");
+        assert_eq!(
+            s.tables[0].columns[0].data_type,
+            SqlServerType::Decimal {
+                precision: Some(18),
+                scale: Some(2)
+            }
+        );
+    }
+
+    #[test]
+    fn parses_string_default_containing_comma() {
+        let s = parse("CREATE TABLE T (Greeting varchar(50) DEFAULT ('hello, world'), Id int);");
+        assert_eq!(
+            s.tables[0].columns[0].default.as_ref().unwrap().expression,
+            "( 'hello, world' )"
+        );
+        assert_eq!(s.tables[0].columns[1].name, "Id");
+    }
+
+    #[test]
+    fn parses_table_level_primary_key() {
+        let s = parse("CREATE TABLE T (Id int, PRIMARY KEY (Id));");
+        assert_eq!(
+            s.tables[0].primary_key.as_ref().unwrap().columns,
+            vec!["Id"]
+        );
+    }
+
+    #[test]
+    fn parses_reserved_table_name_order() {
+        let s = parse("CREATE TABLE [Order] ([Id] int PRIMARY KEY);");
+        assert_eq!(
+            s.tables[0].name,
+            TableName::new(Some("dbo".into()), "Order")
+        );
+        assert_eq!(
+            s.tables[0].primary_key.as_ref().unwrap().columns,
+            vec!["Id"]
+        );
+    }
+
+    #[test]
+    fn unsupported_table_fragment_produces_diagnostic() {
+        let s = parse("CREATE TABLE T (Id int, INDEX IX_T_Id (Id));");
+        assert_eq!(s.tables[0].columns.len(), 1);
+        assert!(s
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == DiagnosticSeverity::Unsupported
+                && d.message.contains("[dbo].[T]")));
     }
 
     #[test]
