@@ -26,7 +26,8 @@ pub fn import_database(
     schema: &DatabaseSchema,
     options: &ConvertOptions,
 ) -> Result<ImportReport> {
-    let generated = ddl::generate(schema, options)?;
+    let table_ddl = ddl::generate_tables(schema, options)?;
+    let index_ddl = ddl::generate_indexes(schema, options)?;
     let table_names = table_names_for_schema(schema, options.table_name_mode)?;
     let manifest = Manifest::discover(
         &options.data_dir,
@@ -38,7 +39,7 @@ pub fn import_database(
     )?;
 
     let transaction = connection.transaction()?;
-    for statement in &generated.statements {
+    for statement in &table_ddl.statements {
         transaction.execute_batch(&statement.0)?;
     }
 
@@ -69,6 +70,10 @@ pub fn import_database(
         report.rows_inserted += table_report.rows_inserted;
         report.rows_rejected += table_report.rows_rejected;
         report.tables.push(table_report);
+    }
+
+    for statement in &index_ddl.statements {
+        transaction.execute_batch(&statement.0)?;
     }
 
     transaction.commit()?;
@@ -153,7 +158,7 @@ mod tests {
     use rusqlite::Connection;
 
     use super::*;
-    use crate::schema::model::{ColumnDef, SqlServerType, TableDef, TableName};
+    use crate::schema::model::{ColumnDef, IndexDef, SqlServerType, TableDef, TableName};
 
     fn temp_dir(name: &str) -> Utf8PathBuf {
         let unique = SystemTime::now()
@@ -201,6 +206,15 @@ mod tests {
         }
     }
 
+    fn schema_with_indexes(tables: Vec<TableDef>, indexes: Vec<IndexDef>) -> DatabaseSchema {
+        DatabaseSchema {
+            tables,
+            indexes,
+            diagnostics: Vec::new(),
+            statement_summary: Default::default(),
+        }
+    }
+
     fn options(dir: Utf8PathBuf) -> ConvertOptions {
         ConvertOptions {
             data_dir: dir,
@@ -241,6 +255,46 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM dbo_Widget", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn creates_indexes_after_importing_rows() {
+        let dir = temp_dir("post-index");
+        write_csv(&dir, "dbo.Widget.csv", "Id,Name\n1,Gear\n2,Bolt\n");
+        let widget = table(
+            "Widget",
+            vec![
+                column("Id", SqlServerType::Int, false),
+                column("Name", SqlServerType::Text, true),
+            ],
+        );
+        let schema = schema_with_indexes(
+            vec![widget.clone()],
+            vec![IndexDef {
+                name: "IX_Widget_Name".into(),
+                table: widget.name.clone(),
+                columns: vec!["Name".into()],
+                unique: false,
+                clustered: None,
+                filter: None,
+            }],
+        );
+        let mut conn = Connection::open_in_memory().unwrap();
+
+        import_database(&mut conn, &schema, &options(dir)).unwrap();
+
+        let index_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'IX_Widget_Name'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(index_count, 1);
+        let row_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM dbo_Widget", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(row_count, 2);
     }
 
     #[test]
