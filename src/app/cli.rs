@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand};
+
+pub use crate::config::options::TableNameMode;
 
 /// CorrodeQL command-line parser.
 #[derive(Debug, Clone, Parser, PartialEq, Eq)]
@@ -124,16 +126,4 @@ pub struct InitExampleArgs {
     /// Allow replacing existing example files.
     #[arg(long)]
     pub overwrite: bool,
-}
-
-/// Table naming strategies accepted by conversion commands.
-#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
-#[value(rename_all = "kebab-case")]
-pub enum TableNameMode {
-    /// Prefix table names with their schema name.
-    SchemaPrefix,
-    /// Drop the `dbo` schema prefix while preserving non-dbo schema names.
-    DropDbo,
-    /// Use only the table name, ignoring schema names.
-    TableOnly,
 }
