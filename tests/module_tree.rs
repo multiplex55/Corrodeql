@@ -25,7 +25,7 @@ fn public_module_tree_exposes_major_areas() {
     sqlite::import::import();
     sqlite::validate::validate();
 
-    let _reader = data::csv_reader::CsvReader;
+    let _reader_options = data::csv_reader::CsvReaderOptions::default();
     data::conversion::convert();
     let _manifest = data::manifest::Manifest::default();
 

@@ -25,5 +25,7 @@ pub enum Error {
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
+    Csv(#[from] csv::Error),
+    #[error(transparent)]
     Sqlite(#[from] rusqlite::Error),
 }
