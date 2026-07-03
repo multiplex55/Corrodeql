@@ -200,7 +200,7 @@ fn write_convert_artifacts(options: &ConvertOptions, generated: &ddl::GeneratedD
     if let Some(report_dir) = &options.report_dir {
         fs::create_dir_all(report_dir)?;
         fs::write(report_dir.join("converted_schema.sql"), &schema_sql)?;
-        let report = Report;
+        let report = Report::default();
         fs::write(report_dir.join("report.txt"), text::render(&report))?;
         fs::write(report_dir.join("report.json"), json::render(&report))?;
     }
