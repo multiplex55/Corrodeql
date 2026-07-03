@@ -1,11 +1,16 @@
 use std::path::Path;
 use std::process::ExitCode;
+use std::{fs, io};
 
 use anyhow::{bail, Result};
 use clap::Parser;
 
 use super::cli::{Cli, Command, EmitDdlArgs, InitExampleArgs, InspectSchemaArgs, ValidateArgs};
 use super::interactive::{complete_convert_options, ConvertOptions};
+use crate::config::options as core_options;
+use crate::report::{json, model::Report, text};
+use crate::schema::parser;
+use crate::sqlite::{database, ddl};
 
 /// Runs the CorrodeQL command-line application.
 pub fn run() -> ExitCode {
@@ -47,11 +52,26 @@ fn run_convert_with_options(options: ConvertOptions) -> Result<()> {
     validate_data_dir(Some(options.data_dir.as_path()))?;
     validate_output_parent(Some(options.out.as_path()))?;
     validate_output_parent(options.emit_ddl.as_deref())?;
+    if let Some(report_dir) = &options.report_dir {
+        validate_output_parent(Some(report_dir.as_path()))?;
+    }
+
+    let schema_text = fs::read_to_string(&options.schema)?;
+    let schema = parser::parse(&schema_text);
+    let core_options = core_convert_options(&options);
+    let generated = ddl::generate(&schema, &core_options)?;
+    write_convert_artifacts(&options, &generated)?;
 
     if options.dry_run {
-        println!("convert dry run: arguments parsed and obvious paths validated");
+        println!("convert dry run: schema parsed and outputs generated without touching SQLite");
     } else {
-        println!("convert is not yet implemented; no conversion was attempted");
+        database::open_output_database(
+            camino::Utf8Path::from_path(options.out.as_path())
+                .ok_or_else(|| anyhow::anyhow!("output SQLite path is not valid UTF-8"))?,
+            options.overwrite,
+            &generated,
+        )?;
+        println!("created SQLite database: {}", options.out.display());
     }
 
     Ok(())
@@ -68,7 +88,18 @@ pub fn run_inspect_schema(args: InspectSchemaArgs) -> Result<()> {
 pub fn run_emit_ddl(args: EmitDdlArgs) -> Result<()> {
     validate_schema_path(args.schema.as_deref())?;
     validate_output_parent(args.out.as_deref())?;
-    println!("emit-ddl is not yet implemented; no DDL was emitted");
+    let schema_path = args
+        .schema
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("schema file path is required"))?;
+    let schema_text = fs::read_to_string(schema_path)?;
+    let schema = parser::parse(&schema_text);
+    let sql = ddl::schema_sql(&schema, &core_options::ConvertOptions::default())?;
+    if let Some(out) = args.out {
+        fs::write(out, sql)?;
+    } else {
+        print!("{sql}");
+    }
     Ok(())
 }
 
@@ -134,4 +165,101 @@ fn validate_output_parent(path: Option<&Path>) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn core_convert_options(options: &ConvertOptions) -> core_options::ConvertOptions {
+    core_options::ConvertOptions {
+        schema_path: camino::Utf8PathBuf::from_path_buf(options.schema.clone()).unwrap_or_default(),
+        data_dir: camino::Utf8PathBuf::from_path_buf(options.data_dir.clone()).unwrap_or_default(),
+        output_db_path: camino::Utf8PathBuf::from_path_buf(options.out.clone()).unwrap_or_default(),
+        overwrite: options.overwrite,
+        null_token: options.null_token.clone(),
+        table_name_mode: options.table_name_mode,
+        emit_ddl_path: options
+            .emit_ddl
+            .clone()
+            .and_then(|path| camino::Utf8PathBuf::from_path_buf(path).ok()),
+        report_dir: options
+            .report_dir
+            .clone()
+            .and_then(|path| camino::Utf8PathBuf::from_path_buf(path).ok()),
+        strict: options.strict,
+        allow_missing_csv: options.allow_missing_csv,
+        allow_extra_csv_columns: options.allow_extra_csv_columns,
+        skip_foreign_key_check: options.skip_foreign_key_check,
+        dry_run: options.dry_run,
+    }
+}
+
+fn write_convert_artifacts(options: &ConvertOptions, generated: &ddl::GeneratedDdl) -> Result<()> {
+    let schema_sql = generated.to_sql();
+    if let Some(path) = &options.emit_ddl {
+        fs::write(path, &schema_sql)?;
+    }
+
+    if let Some(report_dir) = &options.report_dir {
+        fs::create_dir_all(report_dir)?;
+        fs::write(report_dir.join("converted_schema.sql"), &schema_sql)?;
+        let report = Report;
+        fs::write(report_dir.join("report.txt"), text::render(&report))?;
+        fs::write(report_dir.join("report.json"), json::render(&report))?;
+    }
+
+    io::Write::flush(&mut io::stdout())?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::*;
+
+    fn temp_root(name: &str) -> std::path::PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("corrodeql-run-{name}-{unique}"));
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn dry_run_writes_schema_and_report_outputs_without_creating_db() {
+        let root = temp_root("dry-run");
+        let schema = root.join("schema.sql");
+        let data_dir = root.join("csv");
+        let db = root.join("out.sqlite");
+        let ddl_out = root.join("ddl.sql");
+        let report_dir = root.join("reports");
+        fs::write(&schema, "CREATE TABLE T (Id int NOT NULL);").unwrap();
+        fs::create_dir_all(&data_dir).unwrap();
+
+        run_convert_with_options(ConvertOptions {
+            schema,
+            data_dir,
+            out: db.clone(),
+            overwrite: false,
+            null_token: r"\N".to_string(),
+            table_name_mode: crate::app::cli::TableNameMode::SchemaPrefix,
+            emit_ddl: Some(ddl_out.clone()),
+            report_dir: Some(report_dir.clone()),
+            strict: false,
+            allow_missing_csv: false,
+            allow_extra_csv_columns: false,
+            skip_foreign_key_check: false,
+            dry_run: true,
+        })
+        .unwrap();
+
+        assert!(!db.exists());
+        assert!(fs::read_to_string(ddl_out)
+            .unwrap()
+            .contains("CREATE TABLE \"T\""));
+        assert!(report_dir.join("converted_schema.sql").exists());
+        assert!(report_dir.join("report.txt").exists());
+        assert!(report_dir.join("report.json").exists());
+    }
 }
