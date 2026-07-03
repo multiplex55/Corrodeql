@@ -9,6 +9,10 @@ pub use crate::config::options::TableNameMode;
 #[command(name = "corrodeql")]
 #[command(version, about = "CLI tooling for CorrodeQL.")]
 pub struct Cli {
+    /// Enable verbose diagnostic logging.
+    #[arg(short, long, global = true)]
+    pub verbose: bool,
+
     #[command(subcommand)]
     pub command: Option<Command>,
 }
