@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::{fs, io};
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use clap::Parser;
 
 use super::cli::{Cli, Command, EmitDdlArgs, InitExampleArgs, InspectSchemaArgs, ValidateArgs};
@@ -38,6 +38,7 @@ where
     T: Into<std::ffi::OsString> + Clone,
 {
     let cli = Cli::parse_from(args);
+    crate::logging::init(cli.verbose);
 
     match cli.command {
         Some(Command::Convert(args)) => run_convert(args),
@@ -58,7 +59,8 @@ pub fn run_convert(args: super::cli::ConvertArgs) -> Result<()> {
 fn run_convert_with_options(options: ConvertOptions) -> Result<()> {
     validate_convert_options(&options)?;
 
-    let schema_text = fs::read_to_string(&options.schema)?;
+    let schema_text = fs::read_to_string(&options.schema)
+        .with_context(|| format!("failed to read schema file {}", options.schema.display()))?;
     let parsed_schema = parser::parse(&schema_text);
     if parsed_schema
         .diagnostics
@@ -97,7 +99,8 @@ fn run_convert_with_options(options: ConvertOptions) -> Result<()> {
 
     let output_path = camino::Utf8Path::from_path(options.out.as_path())
         .ok_or_else(|| anyhow::anyhow!("output SQLite path is not valid UTF-8"))?;
-    let mut connection = database::create_output_connection(output_path, options.overwrite)?;
+    let mut connection = database::create_output_connection(output_path, options.overwrite)
+        .with_context(|| format!("failed to create SQLite database {}", options.out.display()))?;
     let import_report =
         match sqlite_import::import_database(&mut connection, &schema, &core_options) {
             Ok(report) => report,
@@ -113,7 +116,8 @@ fn run_convert_with_options(options: ConvertOptions) -> Result<()> {
                 return Err(error.into());
             }
         };
-    let validation = sqlite_validate::validate_database(&connection, &schema, &core_options)?;
+    let validation = sqlite_validate::validate_database(&connection, &schema, &core_options)
+        .context("failed to validate SQLite database after import")?;
     let report_validation = report_validation_from_sqlite(&validation);
     write_convert_artifacts(
         &options,
@@ -147,11 +151,13 @@ pub fn run_emit_ddl(args: EmitDdlArgs) -> Result<()> {
         .schema
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("schema file path is required"))?;
-    let schema_text = fs::read_to_string(schema_path)?;
+    let schema_text = fs::read_to_string(schema_path)
+        .with_context(|| format!("failed to read schema file {}", schema_path.display()))?;
     let schema = parser::parse(&schema_text);
     let sql = ddl::schema_sql(&schema, &core_options::ConvertOptions::default())?;
     if let Some(out) = args.out {
-        fs::write(out, sql)?;
+        fs::write(&out, sql)
+            .with_context(|| format!("failed to write SQLite DDL to {}", out.display()))?;
     } else {
         print!("{sql}");
     }
@@ -177,9 +183,11 @@ pub fn run_validate(args: ValidateArgs) -> Result<()> {
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("SQLite database path is required; pass --db"))?;
 
-    let schema_text = fs::read_to_string(schema_path)?;
+    let schema_text = fs::read_to_string(schema_path)
+        .with_context(|| format!("failed to read schema file {}", schema_path.display()))?;
     let schema = parser::parse(&schema_text);
-    let connection = rusqlite::Connection::open(db_path)?;
+    let connection = rusqlite::Connection::open(db_path)
+        .with_context(|| format!("failed to open SQLite database {}", db_path.display()))?;
     let options = core_options::ConvertOptions {
         schema_path: camino::Utf8PathBuf::from_path_buf(schema_path.to_path_buf())
             .unwrap_or_default(),
@@ -242,9 +250,12 @@ pub fn run_init_example(args: InitExampleArgs) -> Result<()> {
     for (relative, contents) in BASIC_EXAMPLE_FILES {
         let path = out_dir.join(relative);
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
+            fs::create_dir_all(parent).with_context(|| {
+                format!("failed to create example directory {}", parent.display())
+            })?;
         }
-        fs::write(path, contents)?;
+        fs::write(&path, contents)
+            .with_context(|| format!("failed to write example file {}", path.display()))?;
     }
 
     println!("created example project: {}", out_dir.display());
@@ -399,12 +410,19 @@ fn write_convert_artifacts(
 ) -> Result<()> {
     let schema_sql = generated.to_sql();
     if let Some(path) = &options.emit_ddl {
-        fs::write(path, &schema_sql)?;
+        fs::write(path, &schema_sql)
+            .with_context(|| format!("failed to write SQLite DDL to {}", path.display()))?;
     }
 
     let report_dir = resolved_report_dir(options);
-    fs::create_dir_all(&report_dir)?;
-    fs::write(report_dir.join("converted_schema.sql"), &schema_sql)?;
+    fs::create_dir_all(&report_dir)
+        .with_context(|| format!("failed to create report directory {}", report_dir.display()))?;
+    fs::write(report_dir.join("converted_schema.sql"), &schema_sql).with_context(|| {
+        format!(
+            "failed to write converted schema report in {}",
+            report_dir.display()
+        )
+    })?;
     let report = build_conversion_report(
         options,
         schema,
@@ -416,11 +434,23 @@ fn write_convert_artifacts(
     fs::write(
         report_dir.join("conversion_report.txt"),
         text::render(&report),
-    )?;
+    )
+    .with_context(|| {
+        format!(
+            "failed to write text conversion report in {}",
+            report_dir.display()
+        )
+    })?;
     fs::write(
         report_dir.join("conversion_report.json"),
         json::render(&report),
-    )?;
+    )
+    .with_context(|| {
+        format!(
+            "failed to write JSON conversion report in {}",
+            report_dir.display()
+        )
+    })?;
 
     io::Write::flush(&mut io::stdout())?;
     Ok(())

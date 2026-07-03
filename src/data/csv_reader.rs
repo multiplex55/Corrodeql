@@ -152,14 +152,15 @@ fn validate_headers(
 }
 
 fn diagnostic_error(diagnostic: ValueDiagnostic) -> Error {
-    validation_error(format!(
-        "invalid CSV value for table {}, column {}, row {}: {:?} ({})",
-        diagnostic.table.display_sql_server(),
-        diagnostic.column,
-        diagnostic.row_number,
-        diagnostic.original_value,
-        diagnostic.reason
-    ))
+    Error::CsvReadImport {
+        table: diagnostic.table.display_sql_server(),
+        column: diagnostic.column,
+        row_number: diagnostic.row_number,
+        message: format!(
+            "invalid value {:?} ({})",
+            diagnostic.original_value, diagnostic.reason
+        ),
+    }
 }
 
 fn validation_error(message: String) -> Error {
