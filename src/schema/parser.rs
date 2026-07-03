@@ -25,11 +25,24 @@ impl Parser {
     }
     fn parse_schema(mut self) -> Schema {
         let mut tables = Vec::new();
+        let mut indexes = Vec::new();
         while !self.is_eof() {
             if self.consume_kw(Keyword::Create) {
+                let unique = self.consume_kw(Keyword::Unique);
+                let clustered = if self.consume_kw(Keyword::Clustered) {
+                    Some(true)
+                } else if self.consume_kw(Keyword::NonClustered) {
+                    Some(false)
+                } else {
+                    None
+                };
                 if self.consume_kw(Keyword::Table) {
                     if let Some(t) = self.parse_create_table() {
                         tables.push(t);
+                    }
+                } else if self.consume_kw(Keyword::Index) {
+                    if let Some(index) = self.parse_create_index(unique, clustered) {
+                        indexes.push(index);
                     }
                 } else {
                     self.unsupported("unsupported CREATE statement");
@@ -60,9 +73,27 @@ impl Parser {
         }
         DatabaseSchema {
             tables,
-            indexes: Vec::new(),
+            indexes,
             diagnostics: self.diagnostics,
         }
+    }
+    fn parse_create_index(&mut self, unique: bool, clustered: Option<bool>) -> Option<IndexDef> {
+        let name = self.ident()?;
+        if !self.consume_kw(Keyword::On) {
+            self.error("expected ON in CREATE INDEX");
+            return None;
+        }
+        let table = self.parse_table_name()?;
+        let columns = self.parse_column_list().unwrap_or_default();
+        self.skip_stmt_tail();
+        Some(IndexDef {
+            name,
+            table,
+            columns,
+            unique,
+            clustered,
+            filter: None,
+        })
     }
     fn parse_create_table(&mut self) -> Option<TableDef> {
         let name = self.parse_table_name()?;
