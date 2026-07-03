@@ -84,8 +84,12 @@ impl TableDef {
 pub struct ColumnDef {
     pub name: String,
     pub data_type: SqlServerType,
+    /// Whether this column allows NULL values. SQL Server columns are parsed as
+    /// nullable by default when neither NULL nor NOT NULL is specified.
     pub nullable: bool,
     pub identity: bool,
+    pub primary_key: bool,
+    pub unique: bool,
     pub default: Option<DefaultConstraintDef>,
     pub check: Option<CheckConstraintDef>,
 }
@@ -235,6 +239,8 @@ mod tests {
                 data_type: SqlServerType::Int,
                 nullable: false,
                 identity: true,
+                primary_key: false,
+                unique: false,
                 default: None,
                 check: None,
             }],

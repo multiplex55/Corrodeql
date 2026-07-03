@@ -367,12 +367,27 @@ impl Parser {
         let mut nullable = true;
         let mut default = None;
         let mut inline_pk = false;
+        let mut inline_unique = false;
+        let mut identity = false;
         while !self.is_eof() && !self.at_sym(',') && !self.at_sym(')') {
             if self.consume_kw(Keyword::Not) {
                 self.consume_kw(Keyword::Null);
                 nullable = false;
             } else if self.consume_kw(Keyword::Null) {
                 nullable = true;
+            } else if self.consume_kw(Keyword::Identity) {
+                identity = true;
+                if self.consume_sym('(') {
+                    let mut depth = 1i32;
+                    while !self.is_eof() && depth > 0 {
+                        if self.at_sym('(') {
+                            depth += 1;
+                        } else if self.at_sym(')') {
+                            depth -= 1;
+                        }
+                        self.advance();
+                    }
+                }
             } else if self.consume_kw(Keyword::Constraint) {
                 let constraint_name = self.ident();
                 if self.consume_kw(Keyword::Default) {
@@ -392,6 +407,10 @@ impl Parser {
                 self.consume_kw(Keyword::Key);
                 inline_pk = true;
                 nullable = false;
+            } else if self.consume_kw(Keyword::Unique) {
+                let _ =
+                    self.consume_kw(Keyword::Clustered) || self.consume_kw(Keyword::NonClustered);
+                inline_unique = true;
             } else {
                 self.advance();
             }
@@ -400,27 +419,19 @@ impl Parser {
             name: name.clone(),
             data_type,
             nullable,
-            identity: false,
+            identity,
+            primary_key: inline_pk,
+            unique: inline_unique,
             default,
-            check: if inline_pk {
-                Some(CheckConstraintDef {
-                    name: Some("__INLINE_PK__".into()),
-                    expression: String::new(),
-                })
-            } else {
-                None
-            },
+            check: None,
         })
     }
     fn inline_pk(&self, col: &ColumnDef) -> Option<PrimaryKeyDef> {
-        col.check
-            .as_ref()
-            .filter(|c| c.name.as_deref() == Some("__INLINE_PK__"))
-            .map(|_| PrimaryKeyDef {
-                name: None,
-                columns: vec![col.name.clone()],
-                clustered: None,
-            })
+        col.primary_key.then(|| PrimaryKeyDef {
+            name: None,
+            columns: vec![col.name.clone()],
+            clustered: None,
+        })
     }
     fn parse_alter_table(&mut self, tables: &mut [TableDef]) {
         let Some(table_name) = self.parse_table_name() else {
@@ -483,12 +494,7 @@ impl Parser {
         let tok = self.advance().clone();
         let kw = match tok.kind {
             TokenKind::Keyword(k) => k,
-            TokenKind::Identifier => {
-                return Some(SqlServerType::Other {
-                    name: tok.lexeme,
-                    arguments: self.type_args(),
-                })
-            }
+            TokenKind::Identifier => return Some(self.type_from_name(tok.lexeme)),
             _ => {
                 self.error("expected data type");
                 return None;
@@ -554,6 +560,67 @@ impl Parser {
             },
         })
     }
+    fn type_from_name(&mut self, name: String) -> SqlServerType {
+        let args = self.type_args();
+        match name.to_ascii_uppercase().as_str() {
+            "INT" => SqlServerType::Int,
+            "BIGINT" => SqlServerType::BigInt,
+            "SMALLINT" => SqlServerType::SmallInt,
+            "TINYINT" => SqlServerType::TinyInt,
+            "BIT" => SqlServerType::Bit,
+            "MONEY" => SqlServerType::Money,
+            "REAL" => SqlServerType::Real,
+            "DATE" => SqlServerType::Date,
+            "DATETIME" => SqlServerType::DateTime,
+            "DATETIME2" => SqlServerType::DateTime2 {
+                scale: num8(args.first()),
+            },
+            "SMALLDATETIME" => SqlServerType::SmallDateTime,
+            "UNIQUEIDENTIFIER" => SqlServerType::UniqueIdentifier,
+            "TEXT" => SqlServerType::Text,
+            "NTEXT" => SqlServerType::NText,
+            "XML" => SqlServerType::Xml,
+            "DECIMAL" => SqlServerType::Decimal {
+                precision: num8(args.first()),
+                scale: num8(args.get(1)),
+            },
+            "NUMERIC" => SqlServerType::Numeric {
+                precision: num8(args.first()),
+                scale: num8(args.get(1)),
+            },
+            "FLOAT" => SqlServerType::Float {
+                precision: num8(args.first()),
+            },
+            "TIME" => SqlServerType::Time {
+                scale: num8(args.first()),
+            },
+            "CHAR" => SqlServerType::Char {
+                length: num32(args.first()),
+            },
+            "NCHAR" => SqlServerType::NChar {
+                length: num32(args.first()),
+            },
+            "VARCHAR" => SqlServerType::VarChar {
+                length: num32(args.first()),
+                max: is_max(args.first()),
+            },
+            "NVARCHAR" => SqlServerType::NVarChar {
+                length: num32(args.first()),
+                max: is_max(args.first()),
+            },
+            "BINARY" => SqlServerType::Binary {
+                length: num32(args.first()),
+            },
+            "VARBINARY" => SqlServerType::VarBinary {
+                length: num32(args.first()),
+                max: is_max(args.first()),
+            },
+            _ => SqlServerType::Other {
+                name,
+                arguments: args,
+            },
+        }
+    }
     fn parse_unique(&mut self, name: Option<String>) -> Option<UniqueConstraintDef> {
         let _ = self.consume_kw(Keyword::Clustered) || self.consume_kw(Keyword::NonClustered);
         let columns = self.parse_column_list()?;
@@ -607,16 +674,13 @@ impl Parser {
             if depth == 0 && (self.at_sym(',') || self.at_sym(')')) {
                 break;
             }
-            if !s.is_empty() {
-                s.push(' ')
-            };
             if self.at_sym('(') {
                 depth += 1;
             }
             if self.at_sym(')') {
                 depth -= 1;
             }
-            s.push_str(&self.advance().lexeme);
+            append_expr_token(&mut s, self.advance());
         }
         s
     }
@@ -637,10 +701,7 @@ impl Parser {
                     break;
                 }
             }
-            if !s.is_empty() {
-                s.push(' ')
-            };
-            s.push_str(&self.advance().lexeme);
+            append_expr_token(&mut s, self.advance());
         }
         s
     }
@@ -757,6 +818,16 @@ fn num32(v: Option<&String>) -> Option<u32> {
 fn is_max(v: Option<&String>) -> bool {
     v.is_some_and(|s| s.eq_ignore_ascii_case("max"))
 }
+fn append_expr_token(output: &mut String, token: &Token) {
+    let lexeme = token.lexeme.as_str();
+    let no_space_before = matches!(lexeme, "(" | ")" | "," | "." | ";");
+    let no_space_after_previous =
+        output.ends_with('(') || output.ends_with('.') || output.is_empty();
+    if !no_space_before && !no_space_after_previous {
+        output.push(' ');
+    }
+    output.push_str(lexeme);
+}
 
 #[cfg(test)]
 mod tests {
@@ -807,6 +878,64 @@ mod tests {
         let s = parse("CREATE TABLE T (A int NULL, B varchar(10) NOT NULL);");
         assert!(s.tables[0].columns[0].nullable);
         assert!(!s.tables[0].columns[1].nullable);
+    }
+
+    #[test]
+    fn parses_required_inline_column_metadata() {
+        let s = parse(
+            "CREATE TABLE T (
+                [CustomerId] [int] IDENTITY(1,1) NOT NULL,
+                [Name] [nvarchar](200) NOT NULL,
+                [CreatedAt] [datetime2](7) NOT NULL DEFAULT (sysutcdatetime()),
+                [ExternalId] [uniqueidentifier] NOT NULL DEFAULT (newid()),
+                [Amount] [decimal](18,2) NULL,
+                [Code] [nvarchar](50) UNIQUE,
+                [Id] [int] PRIMARY KEY
+            );",
+        );
+        let columns = &s.tables[0].columns;
+
+        assert_eq!(columns[0].name, "CustomerId");
+        assert_eq!(columns[0].data_type, SqlServerType::Int);
+        assert!(columns[0].identity);
+        assert!(!columns[0].nullable);
+
+        assert_eq!(
+            columns[1].data_type,
+            SqlServerType::NVarChar {
+                length: Some(200),
+                max: false
+            }
+        );
+        assert!(!columns[1].nullable);
+
+        assert_eq!(
+            columns[2].data_type,
+            SqlServerType::DateTime2 { scale: Some(7) }
+        );
+        assert_eq!(
+            columns[2].default.as_ref().unwrap().expression,
+            "(sysutcdatetime())"
+        );
+
+        assert_eq!(columns[3].data_type, SqlServerType::UniqueIdentifier);
+        assert_eq!(columns[3].default.as_ref().unwrap().expression, "(newid())");
+
+        assert_eq!(
+            columns[4].data_type,
+            SqlServerType::Decimal {
+                precision: Some(18),
+                scale: Some(2)
+            }
+        );
+        assert!(columns[4].nullable);
+
+        assert!(columns[5].unique);
+        assert!(columns[6].primary_key);
+        assert_eq!(
+            s.tables[0].primary_key.as_ref().unwrap().columns,
+            vec!["Id"]
+        );
     }
     #[test]
     fn parses_inline_primary_key() {
@@ -859,7 +988,7 @@ mod tests {
         let s = parse("CREATE TABLE T (Greeting varchar(50) DEFAULT ('hello, world'), Id int);");
         assert_eq!(
             s.tables[0].columns[0].default.as_ref().unwrap().expression,
-            "( 'hello, world' )"
+            "('hello, world')"
         );
         assert_eq!(s.tables[0].columns[1].name, "Id");
     }

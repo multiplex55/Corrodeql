@@ -188,6 +188,8 @@ mod tests {
             data_type,
             nullable: true,
             identity: false,
+            primary_key: false,
+            unique: false,
             default: None,
             check: None,
         }
