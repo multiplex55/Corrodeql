@@ -21,8 +21,8 @@ pub fn normalize_type(data_type: &SqlServerType) -> NormalizedType {
     let (sqlite_affinity, warning) = match data_type {
         Int | BigInt | SmallInt | TinyInt | Bit => (StorageClass::Integer, None),
         Decimal { .. } | Numeric { .. } | Money => (
-            StorageClass::Real,
-            Some("exact SQL Server numeric type mapped to SQLite REAL affinity"),
+            StorageClass::Numeric,
+            Some("exact SQL Server numeric type mapped to SQLite NUMERIC affinity"),
         ),
         Float { .. } | Real => (StorageClass::Real, None),
         Char { .. } | VarChar { .. } | NChar { .. } | NVarChar { .. } | Text | NText => {
@@ -100,7 +100,7 @@ mod tests {
             precision: Some(10),
             scale: Some(2),
         });
-        assert_eq!(normalized.sqlite_affinity, StorageClass::Real);
+        assert_eq!(normalized.sqlite_affinity, StorageClass::Numeric);
         assert_eq!(
             normalized.diagnostics[0].severity,
             DiagnosticSeverity::Warning
@@ -111,11 +111,11 @@ mod tests {
                 scale: Some(3)
             })
             .sqlite_affinity,
-            StorageClass::Real
+            StorageClass::Numeric
         );
         assert_eq!(
             normalize_type(&SqlServerType::Money).sqlite_affinity,
-            StorageClass::Real
+            StorageClass::Numeric
         );
     }
 
