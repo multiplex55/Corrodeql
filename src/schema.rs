@@ -1,5 +1,6 @@
 //! Schema discovery and representation.
 
+pub mod classifier;
 pub mod diagnostics;
 pub mod lexer;
 pub mod model;

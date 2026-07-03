@@ -65,6 +65,11 @@ pub enum Keyword {
     VarBinary,
     Xml,
     Max,
+    View,
+    Trigger,
+    Procedure,
+    Set,
+    Use,
 }
 
 pub fn lex(input: &str) -> Vec<Token> {
@@ -292,6 +297,11 @@ fn keyword(s: &str) -> Option<Keyword> {
         "VARBINARY" => VarBinary,
         "XML" => Xml,
         "MAX" => Max,
+        "VIEW" => View,
+        "TRIGGER" => Trigger,
+        "PROCEDURE" => Procedure,
+        "SET" => Set,
+        "USE" => Use,
         _ => return None,
     })
 }

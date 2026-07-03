@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use super::classifier::ClassificationSummary;
+
 /// Backwards-compatible name for the parsed database schema model.
 pub type Schema = DatabaseSchema;
 
@@ -9,6 +11,8 @@ pub struct DatabaseSchema {
     pub tables: Vec<TableDef>,
     pub indexes: Vec<IndexDef>,
     pub diagnostics: Vec<SchemaDiagnostic>,
+    #[serde(skip)]
+    pub statement_summary: ClassificationSummary,
 }
 
 impl DatabaseSchema {
@@ -251,6 +255,7 @@ mod tests {
             tables: vec![customer_table("dbo")],
             indexes: Vec::new(),
             diagnostics: Vec::new(),
+            statement_summary: Default::default(),
         };
 
         let name = TableName::new(Some("dbo".to_owned()), "Customer");
@@ -264,6 +269,7 @@ mod tests {
             tables: vec![customer_table("sales"), customer_table("archive")],
             indexes: Vec::new(),
             diagnostics: Vec::new(),
+            statement_summary: Default::default(),
         };
 
         assert!(schema
@@ -315,6 +321,7 @@ mod tests {
                 line: None,
                 column: None,
             }],
+            statement_summary: Default::default(),
         };
 
         assert_eq!(schema.diagnostics[0].severity, DiagnosticSeverity::Warning);
@@ -333,6 +340,7 @@ mod tests {
                 filter: None,
             }],
             diagnostics: Vec::new(),
+            statement_summary: Default::default(),
         };
 
         let json = serde_json::to_string(&schema).expect("schema should serialize");
