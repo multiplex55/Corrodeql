@@ -10,7 +10,7 @@ use super::interactive::{complete_convert_options, ConvertOptions};
 use crate::config::options as core_options;
 use crate::report::{json, model::Report, text};
 use crate::schema::parser;
-use crate::sqlite::{database, ddl};
+use crate::sqlite::{database, ddl, validate as sqlite_validate};
 
 /// Runs the CorrodeQL command-line application.
 pub fn run() -> ExitCode {
@@ -103,11 +103,45 @@ pub fn run_emit_ddl(args: EmitDdlArgs) -> Result<()> {
     Ok(())
 }
 
-/// Placeholder implementation for `corrodeql validate`.
+/// Validates an existing SQLite database against schema and CSV inputs.
 pub fn run_validate(args: ValidateArgs) -> Result<()> {
     validate_schema_path(args.schema.as_deref())?;
     validate_data_dir(args.data_dir.as_deref())?;
-    println!("validate is not yet implemented; no validation was attempted");
+    validate_sqlite_db_path(args.db.as_deref())?;
+
+    let schema_path = args
+        .schema
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("schema file path is required"))?;
+    let data_dir = args
+        .data_dir
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("data directory path is required"))?;
+    let db_path = args
+        .db
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("SQLite database path is required; pass --db"))?;
+
+    let schema_text = fs::read_to_string(schema_path)?;
+    let schema = parser::parse(&schema_text);
+    let connection = rusqlite::Connection::open(db_path)?;
+    let options = core_options::ConvertOptions {
+        schema_path: camino::Utf8PathBuf::from_path_buf(schema_path.to_path_buf())
+            .unwrap_or_default(),
+        data_dir: camino::Utf8PathBuf::from_path_buf(data_dir.to_path_buf()).unwrap_or_default(),
+        output_db_path: camino::Utf8PathBuf::from_path_buf(db_path.to_path_buf())
+            .unwrap_or_default(),
+        table_name_mode: args.table_name_mode.unwrap_or_default(),
+        skip_foreign_key_check: args.skip_foreign_key_check,
+        ..core_options::ConvertOptions::default()
+    };
+
+    let report = sqlite_validate::validate_database(&connection, &schema, &options)?;
+    print_validation_report(&report);
+    if !report.is_success() {
+        bail!("validation failed");
+    }
+
     Ok(())
 }
 
@@ -141,6 +175,53 @@ fn validate_data_dir(path: Option<&Path>) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn validate_sqlite_db_path(path: Option<&Path>) -> Result<()> {
+    if let Some(path) = path {
+        if !path.exists() {
+            bail!("SQLite database path does not exist: {}", path.display());
+        }
+        if !path.is_file() {
+            bail!("SQLite database path must be a file: {}", path.display());
+        }
+    }
+
+    Ok(())
+}
+
+fn print_validation_report(report: &sqlite_validate::ValidationReport) {
+    for table in &report.tables {
+        println!(
+            "table {} ({}): {:?}; expected rows: {}; actual rows: {}",
+            table.source_table,
+            table.sqlite_table,
+            table.status,
+            table
+                .expected_row_count
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "unknown".to_owned()),
+            table
+                .actual_row_count
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "missing".to_owned())
+        );
+        if !table.missing_not_null_columns.is_empty() {
+            println!(
+                "  missing NOT NULL metadata for columns: {}",
+                table.missing_not_null_columns.join(", ")
+            );
+        }
+    }
+    for violation in &report.foreign_key_violations {
+        println!(
+            "foreign key violation: table={}, rowid={:?}, parent={}, fkid={}",
+            violation.table, violation.rowid, violation.parent, violation.fkid
+        );
+    }
+    for missing in &report.missing_indexes_or_constraints {
+        println!("missing index or constraint: {missing}");
+    }
 }
 
 fn validate_output_parent(path: Option<&Path>) -> Result<()> {
