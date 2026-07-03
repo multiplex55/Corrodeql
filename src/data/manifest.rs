@@ -52,8 +52,7 @@ impl Manifest {
             .iter()
             .map(|table| table.name.clone())
             .collect();
-        let mut discovered = HashMap::new();
-        let mut diagnostics = Vec::new();
+        let mut csv_paths = Vec::new();
 
         for entry in fs::read_dir(data_dir)? {
             let entry = entry?;
@@ -73,57 +72,72 @@ impl Manifest {
                 continue;
             }
 
-            let table = table_name_from_csv_path(&path)?;
-            if let Some(previous) = discovered.insert(table.clone(), path.clone()) {
-                return Err(validation_error(format!(
-                    "ambiguous CSV files for table {}: {} and {}",
-                    table.display_sql_server(),
-                    previous,
-                    path
-                )));
-            }
-
-            if !expected.contains(&table) {
-                diagnostics.push(ManifestDiagnostic::ExtraCsv { path, table });
-            }
+            csv_paths.push(path);
         }
 
-        for table in &expected {
-            if !discovered.contains_key(table) {
-                diagnostics.push(ManifestDiagnostic::MissingCsv {
-                    table: table.clone(),
-                });
-            }
-        }
-
-        let fatal: Vec<String> = diagnostics
-            .iter()
-            .filter_map(|diagnostic| match diagnostic {
-                ManifestDiagnostic::MissingCsv { table }
-                    if options.strict && !options.allow_missing_csv =>
-                {
-                    Some(format!("missing CSV for {}", table.display_sql_server()))
-                }
-                ManifestDiagnostic::ExtraCsv { path, table } if options.strict => Some(format!(
-                    "extra CSV file {} maps to {}, which is not present in schema",
-                    path,
-                    table.display_sql_server()
-                )),
-                _ => None,
-            })
-            .collect();
-
-        if !fatal.is_empty() {
-            return Err(validation_error(fatal.join("; ")));
-        }
-
-        discovered.retain(|table, _| expected.contains(table));
-
-        Ok(Self {
-            tables: discovered,
-            diagnostics,
-        })
+        manifest_from_csv_paths(csv_paths, expected, options)
     }
+}
+
+fn manifest_from_csv_paths(
+    csv_paths: Vec<Utf8PathBuf>,
+    expected: HashSet<TableName>,
+    options: ManifestOptions,
+) -> Result<Manifest> {
+    let mut discovered = HashMap::new();
+    let mut diagnostics = Vec::new();
+
+    for path in csv_paths {
+        let table = table_name_from_csv_path(&path)?;
+        if let Some(previous) = discovered.insert(table.clone(), path.clone()) {
+            return Err(validation_error(format!(
+                "ambiguous CSV files for table {}: {} and {}",
+                table.display_sql_server(),
+                previous,
+                path
+            )));
+        }
+
+        if !expected.contains(&table) {
+            diagnostics.push(ManifestDiagnostic::ExtraCsv { path, table });
+        }
+    }
+
+    for table in &expected {
+        if !discovered.contains_key(table) {
+            diagnostics.push(ManifestDiagnostic::MissingCsv {
+                table: table.clone(),
+            });
+        }
+    }
+
+    let fatal: Vec<String> = diagnostics
+        .iter()
+        .filter_map(|diagnostic| match diagnostic {
+            ManifestDiagnostic::MissingCsv { table }
+                if options.strict && !options.allow_missing_csv =>
+            {
+                Some(format!("missing CSV for {}", table.display_sql_server()))
+            }
+            ManifestDiagnostic::ExtraCsv { path, table } if options.strict => Some(format!(
+                "extra CSV file {} maps to {}, which is not present in schema",
+                path,
+                table.display_sql_server()
+            )),
+            _ => None,
+        })
+        .collect();
+
+    if !fatal.is_empty() {
+        return Err(validation_error(fatal.join("; ")));
+    }
+
+    discovered.retain(|table, _| expected.contains(table));
+
+    Ok(Manifest {
+        tables: discovered,
+        diagnostics,
+    })
 }
 
 fn table_name_from_csv_path(path: &Utf8Path) -> Result<TableName> {
@@ -303,16 +317,13 @@ mod tests {
             .to_string()
             .contains("expected exactly schema.table.csv"));
 
-        let dir = temp_dir("duplicate");
-        write_csv(&dir, "dbo.Customer.csv");
-        write_csv(&dir, "dbo.Customer.CSV");
-
-        let error = Manifest::discover(
-            &dir,
-            &DatabaseSchema {
-                tables: vec![table("dbo", "Customer")],
-                ..DatabaseSchema::default()
-            },
+        let expected = HashSet::from([TableName::new(Some("dbo".to_owned()), "Customer")]);
+        let error = manifest_from_csv_paths(
+            vec![
+                Utf8PathBuf::from("first/dbo.Customer.csv"),
+                Utf8PathBuf::from("second/dbo.Customer.csv"),
+            ],
+            expected,
             ManifestOptions::default(),
         )
         .unwrap_err();
