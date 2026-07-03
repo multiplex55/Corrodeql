@@ -30,6 +30,8 @@ pub fn normalize_default(expression: impl AsRef<str>) -> NormalizedDefault {
             .map(|message| SchemaDiagnostic {
                 severity: DiagnosticSeverity::Warning,
                 message: message.to_owned(),
+                line: None,
+                column: None,
             })
             .into_iter()
             .collect(),

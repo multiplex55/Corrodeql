@@ -204,6 +204,8 @@ pub struct IndexDef {
 pub struct SchemaDiagnostic {
     pub severity: DiagnosticSeverity,
     pub message: String,
+    pub line: Option<usize>,
+    pub column: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -310,6 +312,8 @@ mod tests {
             diagnostics: vec![SchemaDiagnostic {
                 severity: DiagnosticSeverity::Warning,
                 message: "unsupported filegroup ignored".to_owned(),
+                line: None,
+                column: None,
             }],
         };
 

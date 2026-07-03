@@ -1,31 +1,65 @@
 use super::lexer::{lex, Keyword, Token, TokenKind};
 use super::model::*;
-use super::preprocessor::preprocess;
+use super::preprocessor::{preprocess, SqlBatch};
 use crate::mssql::{defaults::normalize_default, types::normalize_type};
 
 /// Parses schema input into a schema model. Recoverable unsupported statements
 /// are reported in diagnostics and skipped.
 pub fn parse(input: impl AsRef<str>) -> Schema {
-    Parser::new(input.as_ref()).parse_schema()
+    let batches = match preprocess(input.as_ref()) {
+        Ok(batches) => batches,
+        Err(diagnostics) => {
+            return DatabaseSchema {
+                tables: Vec::new(),
+                indexes: Vec::new(),
+                diagnostics,
+            }
+        }
+    };
+    parse_batches(&batches)
+}
+
+fn parse_batches(batches: &[SqlBatch]) -> Schema {
+    let mut tables = Vec::new();
+    let mut indexes = Vec::new();
+    let mut diagnostics = Vec::new();
+    for batch in batches {
+        let mut parser = Parser::new(batch);
+        parser.parse_schema_into(&mut tables, &mut indexes);
+        diagnostics.extend(parser.diagnostics);
+    }
+    for table in &tables {
+        for column in &table.columns {
+            diagnostics.extend(normalize_type(&column.data_type).diagnostics);
+            if let Some(default) = &column.default {
+                diagnostics.extend(normalize_default(&default.expression).diagnostics);
+            }
+        }
+    }
+    DatabaseSchema {
+        tables,
+        indexes,
+        diagnostics,
+    }
 }
 
 struct Parser {
     tokens: Vec<Token>,
     pos: usize,
     diagnostics: Vec<SchemaDiagnostic>,
+    line_offset: usize,
 }
 
 impl Parser {
-    fn new(input: &str) -> Self {
+    fn new(batch: &SqlBatch) -> Self {
         Self {
-            tokens: lex(&preprocess(input)),
+            tokens: lex(&batch.original_text),
             pos: 0,
             diagnostics: Vec::new(),
+            line_offset: batch.line_start.saturating_sub(1),
         }
     }
-    fn parse_schema(mut self) -> Schema {
-        let mut tables = Vec::new();
-        let mut indexes = Vec::new();
+    fn parse_schema_into(&mut self, tables: &mut Vec<TableDef>, indexes: &mut Vec<IndexDef>) {
         while !self.is_eof() {
             if self.consume_kw(Keyword::Create) {
                 let unique = self.consume_kw(Keyword::Unique);
@@ -50,7 +84,7 @@ impl Parser {
                 }
             } else if self.consume_kw(Keyword::Alter) {
                 if self.consume_kw(Keyword::Table) {
-                    self.parse_alter_table(&mut tables);
+                    self.parse_alter_table(tables);
                 } else {
                     self.unsupported("unsupported ALTER statement");
                     self.skip_stmt();
@@ -60,21 +94,6 @@ impl Parser {
                 self.unsupported("unsupported statement skipped");
                 self.skip_stmt();
             }
-        }
-        for table in &tables {
-            for column in &table.columns {
-                self.diagnostics
-                    .extend(normalize_type(&column.data_type).diagnostics);
-                if let Some(default) = &column.default {
-                    self.diagnostics
-                        .extend(normalize_default(&default.expression).diagnostics);
-                }
-            }
-        }
-        DatabaseSchema {
-            tables,
-            indexes,
-            diagnostics: self.diagnostics,
         }
     }
     fn parse_create_index(&mut self, unique: bool, clustered: Option<bool>) -> Option<IndexDef> {
@@ -465,12 +484,16 @@ impl Parser {
         self.diagnostics.push(SchemaDiagnostic {
             severity: DiagnosticSeverity::Unsupported,
             message: msg.into(),
+            line: Some(self.peek().line + self.line_offset),
+            column: Some(self.peek().column),
         });
     }
     fn error(&mut self, msg: &str) {
         self.diagnostics.push(SchemaDiagnostic {
             severity: DiagnosticSeverity::Error,
             message: msg.into(),
+            line: Some(self.peek().line + self.line_offset),
+            column: Some(self.peek().column),
         });
     }
     fn expect_sym(&mut self, c: char) -> bool {
