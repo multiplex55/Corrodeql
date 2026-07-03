@@ -1,9 +1,23 @@
 //! Error types and result aliases.
 
+use camino::Utf8PathBuf;
+
 /// Crate-wide result type.
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// Crate-wide error placeholder.
+/// Crate-wide domain errors.
 #[derive(Debug, thiserror::Error)]
-#[error("corrodeql error")]
-pub struct Error;
+pub enum Error {
+    #[error("invalid path for {kind}: {path} ({reason})")]
+    InvalidPath {
+        kind: &'static str,
+        path: Utf8PathBuf,
+        reason: &'static str,
+    },
+    #[error("invalid value for {option}: {value}; expected {expected}")]
+    InvalidOptionValue {
+        option: &'static str,
+        value: String,
+        expected: &'static str,
+    },
+}
