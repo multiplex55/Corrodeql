@@ -1,0 +1,4 @@
+TenantId,PriceBookCode,CurrencyCode,Description,ValidFrom,ValidTo
+1,STANDARD,USD,Standard USD price book,2026-01-01,\N
+1,EU-EXPORT,EUR,Export price book for EU customers,2026-01-01,2026-12-31
+2,GLOBEX-STD,USD,Globex standard price book,2026-01-01,\N

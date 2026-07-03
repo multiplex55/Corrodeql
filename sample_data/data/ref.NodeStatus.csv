@@ -1,0 +1,4 @@
+NodeStatusId,StatusCode,StatusName,IsTerminal
+1,DRAFT,Draft,0
+2,ACTIVE,Active,0
+3,CLOSED,Closed,1

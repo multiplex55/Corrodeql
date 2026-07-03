@@ -1,0 +1,16 @@
+schema_name,table_name,row_count,csv_file
+dbo,Tenant,2,data/dbo.Tenant.csv
+dbo,AppUser,4,data/dbo.AppUser.csv
+ref,NodeType,3,data/ref.NodeType.csv
+ref,NodeStatus,3,data/ref.NodeStatus.csv
+ref,Category,5,data/ref.Category.csv
+ref,Currency,3,data/ref.Currency.csv
+dbo,Location,3,data/dbo.Location.csv
+dbo,Node,5,data/dbo.Node.csv
+dbo,NodeAudit,4,data/dbo.NodeAudit.csv
+dbo,Tag,4,data/dbo.Tag.csv
+dbo,NodeTag,4,data/dbo.NodeTag.csv
+dbo,PriceBook,3,data/dbo.PriceBook.csv
+dbo,PriceBookLine,4,data/dbo.PriceBookLine.csv
+audit,ImportBatch,2,data/audit.ImportBatch.csv
+dbo,AppSetting,4,data/dbo.AppSetting.csv

@@ -1,0 +1,273 @@
+{
+  "null_token": "\\N",
+  "tables": [
+    {
+      "schema_name": "dbo",
+      "table_name": "Tenant",
+      "csv_file": "data/dbo.Tenant.csv",
+      "column_count": 8,
+      "row_count": 2,
+      "columns": [
+        "TenantId",
+        "TenantGuid",
+        "TenantCode",
+        "TenantName",
+        "IsActive",
+        "CreatedAt",
+        "UpdatedAt",
+        "RowVer"
+      ]
+    },
+    {
+      "schema_name": "dbo",
+      "table_name": "AppUser",
+      "csv_file": "data/dbo.AppUser.csv",
+      "column_count": 13,
+      "row_count": 4,
+      "columns": [
+        "UserId",
+        "TenantId",
+        "ExternalUserGuid",
+        "UserName",
+        "EmailAddress",
+        "DisplayName",
+        "Phone",
+        "PasswordHash",
+        "IsLocked",
+        "FailedLoginCount",
+        "LastLoginAt",
+        "CreatedAt",
+        "RowVer"
+      ]
+    },
+    {
+      "schema_name": "ref",
+      "table_name": "NodeType",
+      "csv_file": "data/ref.NodeType.csv",
+      "column_count": 4,
+      "row_count": 3,
+      "columns": [
+        "NodeTypeId",
+        "NodeTypeCode",
+        "NodeTypeName",
+        "SortOrder"
+      ]
+    },
+    {
+      "schema_name": "ref",
+      "table_name": "NodeStatus",
+      "csv_file": "data/ref.NodeStatus.csv",
+      "column_count": 4,
+      "row_count": 3,
+      "columns": [
+        "NodeStatusId",
+        "StatusCode",
+        "StatusName",
+        "IsTerminal"
+      ]
+    },
+    {
+      "schema_name": "ref",
+      "table_name": "Category",
+      "csv_file": "data/ref.Category.csv",
+      "column_count": 6,
+      "row_count": 5,
+      "columns": [
+        "CategoryId",
+        "TenantId",
+        "ParentCategoryId",
+        "CategoryCode",
+        "CategoryName",
+        "PathText"
+      ]
+    },
+    {
+      "schema_name": "ref",
+      "table_name": "Currency",
+      "csv_file": "data/ref.Currency.csv",
+      "column_count": 3,
+      "row_count": 3,
+      "columns": [
+        "CurrencyCode",
+        "CurrencyName",
+        "MinorUnit"
+      ]
+    },
+    {
+      "schema_name": "dbo",
+      "table_name": "Location",
+      "csv_file": "data/dbo.Location.csv",
+      "column_count": 13,
+      "row_count": 3,
+      "columns": [
+        "LocationId",
+        "TenantId",
+        "LocationCode",
+        "LocationName",
+        "AddressLine1",
+        "AddressLine2",
+        "City",
+        "StateProvince",
+        "PostalCode",
+        "CountryCode",
+        "Latitude",
+        "Longitude",
+        "GeoJson"
+      ]
+    },
+    {
+      "schema_name": "dbo",
+      "table_name": "Node",
+      "csv_file": "data/dbo.Node.csv",
+      "column_count": 43,
+      "row_count": 5,
+      "columns": [
+        "NodeId",
+        "TenantId",
+        "NodeGuid",
+        "NodeTypeId",
+        "NodeStatusId",
+        "CategoryId",
+        "OwnerUserId",
+        "CreatedByUserId",
+        "UpdatedByUserId",
+        "PrimaryLocationId",
+        "ParentNodeId",
+        "RootNodeId",
+        "PreviousNodeId",
+        "ReplacementNodeId",
+        "TemplateNodeId",
+        "NodeCode",
+        "NodeName",
+        "ShortName",
+        "Description",
+        "LegacyText",
+        "QuantityOnHand",
+        "QuantityReserved",
+        "UnitCost",
+        "UnitPrice",
+        "WeightKg",
+        "TemperatureCelsius",
+        "IsActive",
+        "IsDeleted",
+        "Priority",
+        "Rating",
+        "EffectiveDate",
+        "StartTime",
+        "CreatedAt",
+        "UpdatedAt",
+        "ClosedAt",
+        "ExternalTimestamp",
+        "AttributesXml",
+        "MetadataJson",
+        "Payload",
+        "FixedHash",
+        "ComputedAvailableQty",
+        "CodeAndName",
+        "RowVer"
+      ]
+    },
+    {
+      "schema_name": "dbo",
+      "table_name": "NodeAudit",
+      "csv_file": "data/dbo.NodeAudit.csv",
+      "column_count": 7,
+      "row_count": 4,
+      "columns": [
+        "NodeAuditId",
+        "NodeId",
+        "AuditAction",
+        "ChangedByUserId",
+        "ChangedAt",
+        "BeforeJson",
+        "AfterJson"
+      ]
+    },
+    {
+      "schema_name": "dbo",
+      "table_name": "Tag",
+      "csv_file": "data/dbo.Tag.csv",
+      "column_count": 3,
+      "row_count": 4,
+      "columns": [
+        "TagId",
+        "TenantId",
+        "TagName"
+      ]
+    },
+    {
+      "schema_name": "dbo",
+      "table_name": "NodeTag",
+      "csv_file": "data/dbo.NodeTag.csv",
+      "column_count": 4,
+      "row_count": 4,
+      "columns": [
+        "NodeId",
+        "TagId",
+        "TaggedAt",
+        "TaggedByUserId"
+      ]
+    },
+    {
+      "schema_name": "dbo",
+      "table_name": "PriceBook",
+      "csv_file": "data/dbo.PriceBook.csv",
+      "column_count": 6,
+      "row_count": 3,
+      "columns": [
+        "TenantId",
+        "PriceBookCode",
+        "CurrencyCode",
+        "Description",
+        "ValidFrom",
+        "ValidTo"
+      ]
+    },
+    {
+      "schema_name": "dbo",
+      "table_name": "PriceBookLine",
+      "csv_file": "data/dbo.PriceBookLine.csv",
+      "column_count": 5,
+      "row_count": 4,
+      "columns": [
+        "TenantId",
+        "PriceBookCode",
+        "NodeId",
+        "UnitPrice",
+        "MinimumQuantity"
+      ]
+    },
+    {
+      "schema_name": "audit",
+      "table_name": "ImportBatch",
+      "csv_file": "data/audit.ImportBatch.csv",
+      "column_count": 10,
+      "row_count": 2,
+      "columns": [
+        "ImportBatchId",
+        "BatchGuid",
+        "SourceSystem",
+        "FileName",
+        "StartedAt",
+        "CompletedAt",
+        "RowsRead",
+        "RowsInserted",
+        "RowsFailed",
+        "ErrorSummary"
+      ]
+    },
+    {
+      "schema_name": "dbo",
+      "table_name": "AppSetting",
+      "csv_file": "data/dbo.AppSetting.csv",
+      "column_count": 4,
+      "row_count": 4,
+      "columns": [
+        "SettingKey",
+        "SettingValue",
+        "IsSecret",
+        "UpdatedAt"
+      ]
+    }
+  ]
+}

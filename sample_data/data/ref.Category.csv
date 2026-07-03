@@ -1,0 +1,6 @@
+CategoryId,TenantId,ParentCategoryId,CategoryCode,CategoryName,PathText
+1,1,\N,ROOT,Root,/ROOT
+2,1,1,RAW,Raw Materials,/ROOT/RAW
+3,1,1,FIN,Finished Goods,/ROOT/FIN
+4,2,\N,ROOT,Root,/ROOT
+5,2,4,OPS,Operations,/ROOT/OPS

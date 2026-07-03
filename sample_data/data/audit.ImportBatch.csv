@@ -1,0 +1,3 @@
+ImportBatchId,BatchGuid,SourceSystem,FileName,StartedAt,CompletedAt,RowsRead,RowsInserted,RowsFailed,ErrorSummary
+1,00000000-0000-4000-8000-000000009001,fixture-generator,initial_nodes.csv,2026-07-01T08:00:00.0000000,2026-07-01T08:01:00.0000000,5,5,0,\N
+2,00000000-0000-4000-8000-000000009002,legacy-system,bad_rows.csv,2026-07-02T08:00:00.0000000,2026-07-02T08:00:30.0000000,3,2,1,One row failed validation: missing NodeCode

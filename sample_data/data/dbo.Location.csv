@@ -1,0 +1,4 @@
+LocationId,TenantId,LocationCode,LocationName,AddressLine1,AddressLine2,City,StateProvince,PostalCode,CountryCode,Latitude,Longitude,GeoJson
+1,1,HQ,Acme Headquarters,100 Main St,\N,Warner Robins,GA,31088,US,32.613000,-83.624200,"{""type"":""Point"",""coordinates"":[-83.6242,32.613]}"
+2,1,WH-A,Warehouse A,200 Industrial Pkwy,Dock 4,Byron,GA,31008,US,32.653100,-83.759900,"{""type"":""Point"",""coordinates"":[-83.7599,32.6531]}"
+3,2,GLOBEX-HQ,Globex HQ,1 Example Plaza,\N,Atlanta,GA,30301,US,33.749000,-84.388000,"{""type"":""Point"",""coordinates"":[-84.388,33.749]}"

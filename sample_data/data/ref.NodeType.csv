@@ -1,0 +1,4 @@
+NodeTypeId,NodeTypeCode,NodeTypeName,SortOrder
+1,ITEM,Inventory Item,10
+2,ASSEMBLY,Assembly,20
+3,TEMPLATE,Reusable Template,30

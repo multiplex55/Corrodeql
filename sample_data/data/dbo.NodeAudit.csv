@@ -1,0 +1,5 @@
+NodeAuditId,NodeId,AuditAction,ChangedByUserId,ChangedAt,BeforeJson,AfterJson
+1,1001,INSERT,1,2026-07-01T08:20:00.0000000,\N,"{""NodeCode"":""TPL-BASE""}"
+2,1002,INSERT,1,2026-07-01T09:00:00.0000000,\N,"{""NodeCode"":""RAW-BOLT-001""}"
+3,1002,UPDATE,2,2026-07-01T10:00:00.0000000,"{""QuantityReserved"":""0.0000""}","{""QuantityReserved"":""15.2500""}"
+4,1005,DELETE,2,2026-07-04T14:05:00.0000000,"{""IsActive"":1}","{""IsActive"":0}"
