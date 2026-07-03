@@ -55,6 +55,8 @@ pub fn normalize_type(data_type: &SqlServerType) -> NormalizedType {
         .map(|message| SchemaDiagnostic {
             severity: DiagnosticSeverity::Warning,
             message: message.to_owned(),
+            line: None,
+            column: None,
         })
         .into_iter()
         .collect();

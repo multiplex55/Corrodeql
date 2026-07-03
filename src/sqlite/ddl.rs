@@ -297,6 +297,8 @@ fn warning(message: String) -> SchemaDiagnostic {
     SchemaDiagnostic {
         severity: DiagnosticSeverity::Warning,
         message,
+        line: None,
+        column: None,
     }
 }
 
@@ -304,6 +306,8 @@ fn unsupported(message: String) -> SchemaDiagnostic {
     SchemaDiagnostic {
         severity: DiagnosticSeverity::Unsupported,
         message,
+        line: None,
+        column: None,
     }
 }
 

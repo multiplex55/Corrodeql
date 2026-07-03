@@ -5,12 +5,14 @@ fn public_module_tree_exposes_major_areas() {
     let _options = config::options::Options;
     let _paths = config::paths::Paths;
 
-    let schema = schema::parser::parse(schema::preprocessor::preprocess(""));
+    let schema = schema::parser::parse("");
     let _schema = schema::normalize::normalize(schema);
     let _token = schema::lexer::lex("SELECT");
     let _diagnostic = schema::diagnostics::Diagnostic {
         severity: schema::model::DiagnosticSeverity::Warning,
         message: String::new(),
+        line: None,
+        column: None,
     };
 
     let _identifier = mssql::identifiers::Identifier(String::new());
