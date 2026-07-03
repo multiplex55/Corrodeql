@@ -210,6 +210,7 @@ pub struct SchemaDiagnostic {
 pub enum DiagnosticSeverity {
     Warning,
     Error,
+    Unsupported,
 }
 
 fn escape_sql_server_identifier(identifier: &str) -> String {

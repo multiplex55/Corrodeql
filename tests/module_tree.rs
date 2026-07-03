@@ -7,8 +7,11 @@ fn public_module_tree_exposes_major_areas() {
 
     let schema = schema::parser::parse(schema::preprocessor::preprocess(""));
     let _schema = schema::normalize::normalize(schema);
-    let _token = schema::lexer::Token;
-    let _diagnostic = schema::diagnostics::Diagnostic;
+    let _token = schema::lexer::lex("SELECT");
+    let _diagnostic = schema::diagnostics::Diagnostic {
+        severity: schema::model::DiagnosticSeverity::Warning,
+        message: String::new(),
+    };
 
     let _identifier = mssql::identifiers::Identifier(String::new());
     let _type_name = mssql::types::TypeName(String::new());
