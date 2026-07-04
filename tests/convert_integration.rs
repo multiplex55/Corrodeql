@@ -41,9 +41,9 @@ fn minimal_schema_and_csv_produce_sqlite_database_and_reports() {
         "corrodeql".into(),
         "convert".into(),
         "--schema".into(),
-        schema.into_os_string(),
+        schema.clone().into_os_string(),
         "--data-dir".into(),
-        data_dir.into_os_string(),
+        data_dir.clone().into_os_string(),
         "--out".into(),
         db.clone().into_os_string(),
         "--emit-ddl".into(),
@@ -63,8 +63,40 @@ fn minimal_schema_and_csv_produce_sqlite_database_and_reports() {
         .unwrap()
         .contains("CREATE TABLE \"dbo_Widget\""));
     assert!(report_dir.join("converted_schema.sql").exists());
+    let text_report = fs::read_to_string(report_dir.join("conversion_report.txt")).unwrap();
+    assert!(text_report.contains(&format!("Input schema: {}", schema.display())));
+    assert!(text_report.contains(&format!("Data directory: {}", data_dir.display())));
+    assert!(text_report.contains(&format!("Output database: {}", db.display())));
+    assert!(text_report.contains("Table naming mode: schema-prefix"));
+    assert!(text_report.contains(r"Null token: \N"));
+    assert!(text_report.contains("Rows imported per table"));
+    assert!(text_report.contains("[dbo].[Widget]: 1 inserted"));
+    assert!(text_report.contains("Row-count validation"));
+    assert!(text_report.contains("Foreign-key validation"));
+    assert!(text_report.contains("Integrity check"));
     assert!(report_dir.join("conversion_report.txt").exists());
-    assert!(report_dir.join("conversion_report.json").exists());
+    let json_report: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(report_dir.join("conversion_report.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        json_report["input_schema_path"],
+        schema.display().to_string()
+    );
+    assert_eq!(
+        json_report["data_directory"],
+        data_dir.display().to_string()
+    );
+    assert_eq!(
+        json_report["output_database_path"],
+        db.display().to_string()
+    );
+    assert_eq!(json_report["table_name_mode"], "schema-prefix");
+    assert_eq!(json_report["null_token"], r"\N");
+    assert_eq!(json_report["import"]["tables"][0]["rows_inserted"], 1);
+    assert!(json_report.get("row_count_validation").is_some());
+    assert!(json_report.get("foreign_key_validation").is_some());
+    assert!(json_report.get("integrity_check").is_some());
 }
 
 #[test]
@@ -194,6 +226,49 @@ fn invalid_csv_causes_validation_import_failure_without_sql_server() {
     ]);
 
     assert!(result.is_err());
+}
+
+#[test]
+fn import_failure_after_ddl_generation_still_writes_reports() {
+    let root = temp_root("partial-failure-report");
+    let schema = root.join("schema.sql");
+    let data_dir = root.join("csv");
+    let db = root.join("out.sqlite");
+    let report_dir = root.join("reports");
+    fs::create_dir_all(&data_dir).unwrap();
+    fs::write(&schema, include_str!("fixtures/simple_schema.sql")).unwrap();
+    fs::write(
+        data_dir.join("dbo.Widget.csv"),
+        "Id,Name\nnot-an-int,Gear\n",
+    )
+    .unwrap();
+
+    let result = run_with_args([
+        "corrodeql".into(),
+        "convert".into(),
+        "--schema".into(),
+        schema.into_os_string(),
+        "--data-dir".into(),
+        data_dir.into_os_string(),
+        "--out".into(),
+        db.into_os_string(),
+        "--report-dir".into(),
+        report_dir.clone().into_os_string(),
+        "--strict".into(),
+    ]);
+
+    assert!(result.is_err());
+    assert!(report_dir.join("converted_schema.sql").exists());
+    assert!(report_dir.join("conversion_report.txt").exists());
+    let report: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(report_dir.join("conversion_report.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(report["validation"]["attempted"], false);
+    assert!(report["validation"]["diagnostics"][0]["message"]
+        .as_str()
+        .unwrap()
+        .contains("import failed"));
 }
 
 #[test]

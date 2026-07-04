@@ -8,12 +8,21 @@ pub struct ConversionReport {
     pub input_schema_path: String,
     pub data_directory: String,
     pub output_database_path: String,
+    pub table_name_mode: String,
+    pub null_token: String,
     pub schema: SchemaSummary,
     pub statements: StatementReport,
     pub import: ImportReport,
     pub validation: ValidationReport,
+    pub row_count_validation: RowCountValidationReport,
+    pub foreign_key_validation: ForeignKeyValidationReport,
+    pub integrity_check: IntegrityCheckReport,
     pub diagnostics: Vec<Diagnostic>,
+    pub type_mapping_warnings: Vec<Diagnostic>,
+    pub default_mapping_warnings: Vec<Diagnostic>,
+    pub skipped_objects: Vec<String>,
     pub unsupported_sql_server_features: Vec<String>,
+    pub csv_issues: Vec<CsvIssueReport>,
 }
 
 /// Backwards-compatible report type name.
@@ -111,6 +120,23 @@ pub struct ForeignKeyViolationReport {
     pub rowid: Option<i64>,
     pub parent_table: String,
     pub foreign_key_id: i64,
+}
+
+/// Structured SQLite foreign-key validation results included in conversion reports.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ForeignKeyValidationReport {
+    pub attempted: bool,
+    pub skipped: bool,
+    pub violations: Vec<ForeignKeyViolationReport>,
+}
+
+/// Structured CSV issue included in conversion reports.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CsvIssueReport {
+    pub source_table: String,
+    pub sqlite_table: String,
+    pub csv_path: Option<String>,
+    pub message: String,
 }
 
 /// SQLite `PRAGMA integrity_check` results included in conversion reports.

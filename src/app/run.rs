@@ -12,9 +12,10 @@ use crate::config::options as core_options;
 use crate::report::{
     json,
     model::{
-        ConversionReport, Diagnostic, DiagnosticSeverity, ForeignKeyViolationReport, ImportReport,
-        SchemaSummary, StatementKindReport, StatementReport, TableImportReport, TableImportStatus,
-        TableReport, ValidationReport,
+        ConversionReport, CsvIssueReport, Diagnostic, DiagnosticSeverity,
+        ForeignKeyValidationReport, ForeignKeyViolationReport, ImportReport, SchemaSummary,
+        StatementKindReport, StatementReport, TableImportReport, TableImportStatus, TableReport,
+        ValidationReport,
     },
     text,
 };
@@ -559,16 +560,47 @@ fn build_conversion_report(
             .then_with(|| left.message.cmp(&right.message))
     });
 
+    let type_mapping_warnings = diagnostics
+        .iter()
+        .filter(|diagnostic| is_type_mapping_warning(&diagnostic.message))
+        .cloned()
+        .collect::<Vec<_>>();
+    let default_mapping_warnings = diagnostics
+        .iter()
+        .filter(|diagnostic| is_default_mapping_warning(&diagnostic.message))
+        .cloned()
+        .collect::<Vec<_>>();
     let unsupported_sql_server_features = diagnostics
         .iter()
         .filter(|diagnostic| diagnostic.severity == DiagnosticSeverity::Unsupported)
         .map(|diagnostic| diagnostic.message.clone())
         .collect::<Vec<_>>();
+    let skipped_objects = schema
+        .statement_summary
+        .ignored
+        .iter()
+        .map(|(kind, count)| {
+            format!(
+                "{} {} statement{}",
+                count,
+                kind.label(),
+                if *count == 1 { "" } else { "s" }
+            )
+        })
+        .collect::<Vec<_>>();
+
+    let import = sorted_import_report(
+        import_report.unwrap_or_else(|| skipped_import_report(schema, &table_names)),
+    );
+    let csv_issues = csv_issues_from_import_report(&import);
+    let validation = sorted_validation_report(validation);
 
     Ok(ConversionReport {
         input_schema_path: options.schema.display().to_string(),
         data_directory: options.data_dir.display().to_string(),
         output_database_path: options.out.display().to_string(),
+        table_name_mode: core_options.table_name_mode.to_string(),
+        null_token: core_options.null_token.clone(),
         statements: statement_report(&schema.statement_summary),
         schema: SchemaSummary {
             tables_detected: tables.len(),
@@ -577,13 +609,53 @@ fn build_conversion_report(
             indexes_detected: schema.indexes.len(),
             tables,
         },
-        import: sorted_import_report(
-            import_report.unwrap_or_else(|| skipped_import_report(schema, &table_names)),
-        ),
-        validation: sorted_validation_report(validation),
+        import,
+        row_count_validation: validation.row_count_validation.clone(),
+        foreign_key_validation: ForeignKeyValidationReport {
+            attempted: validation.foreign_key_check_attempted,
+            skipped: validation.foreign_key_check_skipped,
+            violations: validation.foreign_key_violations.clone(),
+        },
+        integrity_check: validation.integrity_check.clone(),
+        validation,
         diagnostics,
+        type_mapping_warnings,
+        default_mapping_warnings,
+        skipped_objects,
         unsupported_sql_server_features,
+        csv_issues,
     })
+}
+
+fn is_type_mapping_warning(message: &str) -> bool {
+    message.contains("unrecognized SQL Server type") || message.contains("SQLite TEXT affinity")
+}
+
+fn is_default_mapping_warning(message: &str) -> bool {
+    message.starts_with("default on ") || message.contains("default") && message.contains("SQLite")
+}
+
+fn csv_issues_from_import_report(report: &ImportReport) -> Vec<CsvIssueReport> {
+    let mut issues = report
+        .tables
+        .iter()
+        .flat_map(|table| {
+            table.diagnostics.iter().map(|message| CsvIssueReport {
+                source_table: table.source_table.clone(),
+                sqlite_table: table.sqlite_table.clone(),
+                csv_path: table.csv_path.clone(),
+                message: message.clone(),
+            })
+        })
+        .collect::<Vec<_>>();
+    issues.sort_by(|left, right| {
+        left.source_table
+            .cmp(&right.source_table)
+            .then_with(|| left.sqlite_table.cmp(&right.sqlite_table))
+            .then_with(|| left.csv_path.cmp(&right.csv_path))
+            .then_with(|| left.message.cmp(&right.message))
+    });
+    issues
 }
 
 fn statement_report(summary: &crate::schema::classifier::ClassificationSummary) -> StatementReport {
