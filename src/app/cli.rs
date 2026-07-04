@@ -140,8 +140,8 @@ pub struct ValidateArgs {
 #[derive(Debug, Clone, Args, Default, PartialEq, Eq)]
 pub struct InitExampleArgs {
     /// Directory where the example project should be created.
-    #[arg(long, value_name = "DIR")]
-    pub out_dir: Option<PathBuf>,
+    #[arg(long, value_name = "DIR", alias = "out-dir")]
+    pub out: Option<PathBuf>,
 
     /// Allow replacing existing example files.
     #[arg(long)]

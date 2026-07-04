@@ -256,9 +256,9 @@ const BASIC_EXAMPLE_FILES: &[(&str, &str)] = &[
 /// Writes the bundled `examples/basic` project to disk.
 pub fn run_init_example(args: InitExampleArgs) -> Result<()> {
     let out_dir = args
-        .out_dir
+        .out
         .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("output directory is required; pass --out-dir"))?;
+        .ok_or_else(|| anyhow::anyhow!("output directory is required; pass --out"))?;
 
     let existing = BASIC_EXAMPLE_FILES
         .iter()
