@@ -34,7 +34,7 @@ pub fn create_output_connection(path: impl AsRef<Utf8Path>, overwrite: bool) -> 
     }
 
     let connection = Connection::open(path.as_std_path())?;
-    connection.pragma_update(None, "foreign_keys", "ON")?;
+    connection.pragma_update(None, "foreign_keys", "OFF")?;
     Ok(connection)
 }
 
@@ -52,7 +52,7 @@ pub fn open_output_connection(
     }
 
     let mut connection = Connection::open(path.as_std_path())?;
-    connection.pragma_update(None, "foreign_keys", "ON")?;
+    connection.pragma_update(None, "foreign_keys", "OFF")?;
 
     let transaction = connection.transaction()?;
     for statement in &ddl.statements {
@@ -61,6 +61,27 @@ pub fn open_output_connection(
     transaction.commit()?;
 
     Ok(connection)
+}
+
+/// Applies SQLite PRAGMAs optimized for bulk CSV import.
+///
+/// Foreign-key enforcement is intentionally disabled while rows are loaded so
+/// related tables can be imported in schema order and validated after the full
+/// import is complete.
+pub fn apply_import_pragmas(connection: &Connection) -> Result<()> {
+    connection.execute_batch(
+        "PRAGMA foreign_keys = OFF;
+         PRAGMA journal_mode = WAL;
+         PRAGMA synchronous = OFF;
+         PRAGMA temp_store = MEMORY;",
+    )?;
+    Ok(())
+}
+
+/// Enables foreign-key enforcement before post-import validation.
+pub fn enable_foreign_keys(connection: &Connection) -> Result<()> {
+    connection.pragma_update(None, "foreign_keys", "ON")?;
+    Ok(())
 }
 
 fn validate_output_path(path: &Utf8Path, overwrite: bool) -> Result<()> {
@@ -150,15 +171,53 @@ mod tests {
         assert_eq!(count, 2);
     }
 
+    fn pragma_i64(connection: &Connection, name: &str) -> i64 {
+        connection
+            .query_row(&format!("PRAGMA {name}"), [], |row| row.get(0))
+            .unwrap()
+    }
+
+    fn pragma_string(connection: &Connection, name: &str) -> String {
+        connection
+            .query_row(&format!("PRAGMA {name}"), [], |row| row.get(0))
+            .unwrap()
+    }
+
     #[test]
-    fn enables_foreign_keys() {
-        let root = temp_root("foreign-keys");
+    fn output_connection_leaves_foreign_keys_disabled_for_import() {
+        let root = temp_root("foreign-keys-disabled");
         let db = root.join("out.sqlite");
         let connection = open_output_connection(&db, false, &generated_ddl()).unwrap();
-        let enabled: i64 = connection
-            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(enabled, 1);
+
+        assert_eq!(pragma_i64(&connection, "foreign_keys"), 0);
+    }
+
+    #[test]
+    fn import_pragmas_disable_foreign_keys_and_configure_bulk_import_state() {
+        let root = temp_root("import-pragmas");
+        let db = root.join("out.sqlite");
+        let connection = create_output_connection(&db, false).unwrap();
+        enable_foreign_keys(&connection).unwrap();
+        assert_eq!(pragma_i64(&connection, "foreign_keys"), 1);
+
+        apply_import_pragmas(&connection).unwrap();
+
+        assert_eq!(pragma_i64(&connection, "foreign_keys"), 0);
+        assert_eq!(pragma_string(&connection, "journal_mode"), "wal");
+        assert_eq!(pragma_i64(&connection, "synchronous"), 0);
+        assert_eq!(pragma_i64(&connection, "temp_store"), 2);
+    }
+
+    #[test]
+    fn foreign_keys_can_be_reenabled_before_validation() {
+        let root = temp_root("foreign-keys-reenabled");
+        let db = root.join("out.sqlite");
+        let connection = create_output_connection(&db, false).unwrap();
+        apply_import_pragmas(&connection).unwrap();
+
+        enable_foreign_keys(&connection).unwrap();
+
+        assert_eq!(pragma_i64(&connection, "foreign_keys"), 1);
     }
 
     #[test]
