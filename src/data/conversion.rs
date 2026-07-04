@@ -49,7 +49,7 @@ fn convert_non_null_value(data_type: &SqlServerType, value: &str) -> Result<Valu
     match data_type {
         Int | BigInt | SmallInt | TinyInt => parse_integer(value),
         Bit => parse_bit(value),
-        Decimal { .. } | Numeric { .. } | Money => parse_numeric_text(value),
+        Decimal { .. } | Numeric { .. } | Money | SmallMoney => parse_numeric_text(value),
         Float { .. } | Real => value
             .parse::<f64>()
             .map(Value::Real)
@@ -59,6 +59,7 @@ fn convert_non_null_value(data_type: &SqlServerType, value: &str) -> Result<Valu
         | DateTime
         | DateTime2 { .. }
         | SmallDateTime
+        | DateTimeOffset { .. }
         | UniqueIdentifier
         | Char { .. }
         | VarChar { .. }
@@ -68,7 +69,7 @@ fn convert_non_null_value(data_type: &SqlServerType, value: &str) -> Result<Valu
         | NText
         | Xml
         | Other { .. } => Ok(Value::Text(value.to_owned())),
-        Binary { .. } | VarBinary { .. } => parse_hex_blob(value),
+        Binary { .. } | VarBinary { .. } | Image | RowVersion | Timestamp => parse_hex_blob(value),
     }
 }
 

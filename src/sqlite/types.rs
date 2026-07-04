@@ -1,4 +1,4 @@
-use crate::schema::model::SqlServerType;
+use crate::{mssql::types::normalize_type, schema::model::SqlServerType};
 
 /// SQLite storage classes / type affinity names used in generated DDL.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,24 +27,7 @@ impl StorageClass {
 
 /// Maps SQL Server types to SQLite affinities for DDL generation.
 pub fn sqlite_affinity(data_type: &SqlServerType) -> StorageClass {
-    use SqlServerType::*;
-
-    match data_type {
-        Int | BigInt | SmallInt | TinyInt | Bit => StorageClass::Integer,
-        Decimal { .. } | Numeric { .. } | Money => StorageClass::Numeric,
-        Float { .. } | Real => StorageClass::Real,
-        Date | Time { .. } | DateTime | DateTime2 { .. } | SmallDateTime => StorageClass::Text,
-        UniqueIdentifier
-        | Char { .. }
-        | VarChar { .. }
-        | NChar { .. }
-        | NVarChar { .. }
-        | Text
-        | NText
-        | Xml => StorageClass::Text,
-        Binary { .. } | VarBinary { .. } => StorageClass::Blob,
-        Other { .. } => StorageClass::Text,
-    }
+    normalize_type(data_type).sqlite_affinity
 }
 
 #[cfg(test)]
@@ -70,7 +53,7 @@ mod tests {
                 precision: Some(18),
                 scale: Some(2),
             }),
-            StorageClass::Numeric
+            StorageClass::Text
         );
         assert_eq!(
             sqlite_affinity(&SqlServerType::Float { precision: None }),
