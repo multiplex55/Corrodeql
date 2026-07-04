@@ -360,6 +360,11 @@ fn print_validation_report(report: &sqlite_validate::ValidationReport) {
     for diagnostic in &report.row_count_validation.diagnostics {
         println!("row-count diagnostic: {:?}", diagnostic);
     }
+    println!(
+        "integrity check: success={}, results={}",
+        report.integrity_check.success,
+        report.integrity_check.results.join("; ")
+    );
 }
 
 fn validate_output_parent(path: Option<&Path>) -> Result<()> {
@@ -656,6 +661,7 @@ fn report_validation_not_attempted(message: &str) -> ValidationReport {
         success: false,
         tables_validated: 0,
         row_count_validation: Default::default(),
+        integrity_check: Default::default(),
         diagnostics: vec![Diagnostic {
             severity: DiagnosticSeverity::Warning,
             message: message.to_owned(),
@@ -694,12 +700,36 @@ fn report_validation_from_sqlite(report: &sqlite_validate::ValidationReport) -> 
     let row_count_validation =
         report_row_count_validation_from_sqlite(&report.row_count_validation);
     diagnostics.extend(row_count_validation.diagnostics.clone());
+    let integrity_check = report_integrity_check_from_sqlite(&report.integrity_check);
+    if !integrity_check.success {
+        diagnostics.push(Diagnostic {
+            severity: DiagnosticSeverity::Error,
+            message: format!(
+                "SQLite integrity_check failed: {}",
+                if integrity_check.results.is_empty() {
+                    "<no rows>".to_owned()
+                } else {
+                    integrity_check.results.join("; ")
+                }
+            ),
+        });
+    }
     ValidationReport {
         attempted: true,
         success: report.is_success(),
         tables_validated: report.tables.len(),
         row_count_validation,
+        integrity_check,
         diagnostics,
+    }
+}
+
+fn report_integrity_check_from_sqlite(
+    report: &sqlite_validate::IntegrityCheckReport,
+) -> crate::report::model::IntegrityCheckReport {
+    crate::report::model::IntegrityCheckReport {
+        success: report.success,
+        results: report.results.clone(),
     }
 }
 
@@ -930,5 +960,30 @@ mod tests {
             .map(|diagnostic| (diagnostic.severity, diagnostic.message.as_str()))
             .collect::<Vec<_>>();
         assert!(diagnostics.windows(2).all(|pair| pair[0] <= pair[1]));
+    }
+
+    #[test]
+    fn sqlite_integrity_failure_becomes_validation_diagnostic() {
+        let sqlite_report = sqlite_validate::ValidationReport {
+            integrity_check: sqlite_validate::IntegrityCheckReport {
+                success: false,
+                results: vec!["row 1 missing from index".to_owned()],
+            },
+            ..sqlite_validate::ValidationReport::default()
+        };
+
+        let report = report_validation_from_sqlite(&sqlite_report);
+
+        assert!(!report.success);
+        assert_eq!(
+            report.integrity_check.results,
+            vec!["row 1 missing from index"]
+        );
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.severity == DiagnosticSeverity::Error
+                && diagnostic
+                    .message
+                    .contains("SQLite integrity_check failed: row 1 missing from index")
+        }));
     }
 }

@@ -119,6 +119,19 @@ pub fn render(report: &ConversionReport) -> String {
         "Attempted: {}, Success: {}, Tables validated: {}\n",
         report.validation.attempted, report.validation.success, report.validation.tables_validated
     ));
+    output.push_str(&format!(
+        "Integrity check: {} ({})\n",
+        if report.validation.integrity_check.success {
+            "ok"
+        } else {
+            "failed"
+        },
+        if report.validation.integrity_check.results.is_empty() {
+            "<no rows>".to_owned()
+        } else {
+            report.validation.integrity_check.results.join("; ")
+        }
+    ));
     for diagnostic in &report.validation.diagnostics {
         output.push_str(&format!(
             "- {:?}: {}\n",
@@ -133,7 +146,8 @@ pub fn render(report: &ConversionReport) -> String {
 mod tests {
     use super::*;
     use crate::report::model::{
-        ConversionReport, Diagnostic, DiagnosticSeverity, SchemaSummary, TableReport,
+        ConversionReport, Diagnostic, DiagnosticSeverity, IntegrityCheckReport, SchemaSummary,
+        TableReport, ValidationReport,
     };
 
     #[test]
@@ -172,5 +186,23 @@ mod tests {
             ..ConversionReport::default()
         };
         assert!(render(&report).contains("warning: default was ignored"));
+    }
+
+    #[test]
+    fn text_report_includes_integrity_check_results() {
+        let report = ConversionReport {
+            validation: ValidationReport {
+                attempted: true,
+                success: false,
+                integrity_check: IntegrityCheckReport {
+                    success: false,
+                    results: vec!["row 1 missing from index".to_owned()],
+                },
+                ..ValidationReport::default()
+            },
+            ..ConversionReport::default()
+        };
+        let text = render(&report);
+        assert!(text.contains("Integrity check: failed (row 1 missing from index)"));
     }
 }

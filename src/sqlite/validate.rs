@@ -20,6 +20,7 @@ pub struct ValidationReport {
     pub foreign_key_violations: Vec<ForeignKeyViolation>,
     pub missing_indexes_or_constraints: Vec<String>,
     pub row_count_validation: RowCountValidationReport,
+    pub integrity_check: IntegrityCheckReport,
 }
 
 impl ValidationReport {
@@ -31,6 +32,21 @@ impl ValidationReport {
             && self.foreign_key_violations.is_empty()
             && self.missing_indexes_or_constraints.is_empty()
             && self.row_count_validation.is_success()
+            && self.integrity_check.success
+    }
+}
+
+/// Result rows returned by `PRAGMA integrity_check`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct IntegrityCheckReport {
+    pub success: bool,
+    pub results: Vec<String>,
+}
+
+impl IntegrityCheckReport {
+    pub fn from_results(results: Vec<String>) -> Self {
+        let success = integrity_check_succeeded(&results);
+        Self { success, results }
     }
 }
 
@@ -114,6 +130,7 @@ pub fn validate_database(
     let existing_indexes = existing_indexes(connection)?;
 
     let mut report = ValidationReport::default();
+    report.integrity_check = run_integrity_check(connection)?;
 
     for table in schema.tables() {
         let sqlite_table = table_names.get(&table.name).ok_or_else(|| {
@@ -181,6 +198,18 @@ pub fn validate_database(
     }
 
     Ok(report)
+}
+
+/// Runs SQLite's full database integrity check.
+pub fn run_integrity_check(connection: &Connection) -> Result<IntegrityCheckReport> {
+    let mut statement = connection.prepare("PRAGMA integrity_check")?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+    let results = rows.collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(IntegrityCheckReport::from_results(results))
+}
+
+fn integrity_check_succeeded(results: &[String]) -> bool {
+    matches!(results, [result] if result == "ok")
 }
 
 fn validate_row_counts(
@@ -432,8 +461,38 @@ mod tests {
 
         let report = validate_database(&connection, &schema, &options(dir)).unwrap();
         assert!(report.is_success());
+        assert_eq!(
+            report.integrity_check,
+            IntegrityCheckReport {
+                success: true,
+                results: vec!["ok".to_owned()],
+            }
+        );
         assert_eq!(report.tables[0].expected_row_count, Some(1));
         assert_eq!(report.tables[0].actual_row_count, Some(1));
+    }
+
+    #[test]
+    fn in_memory_database_integrity_check_returns_ok() {
+        let connection = Connection::open_in_memory().unwrap();
+        let report = run_integrity_check(&connection).unwrap();
+        assert_eq!(
+            report,
+            IntegrityCheckReport {
+                success: true,
+                results: vec!["ok".to_owned()],
+            }
+        );
+    }
+
+    #[test]
+    fn integrity_check_requires_single_ok_row() {
+        assert!(IntegrityCheckReport::from_results(vec!["ok".to_owned()]).success);
+        assert!(!IntegrityCheckReport::from_results(vec!["not ok".to_owned()]).success);
+        assert!(
+            !IntegrityCheckReport::from_results(vec!["ok".to_owned(), "extra".to_owned()]).success
+        );
+        assert!(!IntegrityCheckReport::from_results(Vec::new()).success);
     }
 
     #[test]
