@@ -97,7 +97,15 @@ pub struct ValidationReport {
     pub success: bool,
     pub tables_validated: usize,
     pub row_count_validation: RowCountValidationReport,
+    pub integrity_check: IntegrityCheckReport,
     pub diagnostics: Vec<Diagnostic>,
+}
+
+/// SQLite `PRAGMA integrity_check` results included in conversion reports.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntegrityCheckReport {
+    pub success: bool,
+    pub results: Vec<String>,
 }
 
 /// Optional row-count manifest validation status included in conversion reports.

@@ -9,7 +9,8 @@ pub fn render(report: &ConversionReport) -> String {
 mod tests {
     use super::*;
     use crate::report::model::{
-        ConversionReport, Diagnostic, DiagnosticSeverity, SchemaSummary, TableReport,
+        ConversionReport, Diagnostic, DiagnosticSeverity, IntegrityCheckReport, SchemaSummary,
+        TableReport, ValidationReport,
     };
 
     #[test]
@@ -31,6 +32,13 @@ mod tests {
                 severity: DiagnosticSeverity::Unsupported,
                 message: "filegroup ignored".to_owned(),
             }],
+            validation: ValidationReport {
+                integrity_check: IntegrityCheckReport {
+                    success: true,
+                    results: vec!["ok".to_owned()],
+                },
+                ..ValidationReport::default()
+            },
             ..ConversionReport::default()
         };
 
@@ -39,6 +47,8 @@ mod tests {
         assert!(json.contains("\"source_table\": \"[dbo].[A]\""));
         assert!(json.contains("\"sqlite_table\": \"dbo_A\""));
         assert!(json.contains("\"severity\": \"unsupported\""));
+        assert!(json.contains("\"integrity_check\""));
+        assert!(json.contains("\"results\": [\n        \"ok\"\n      ]"));
         assert!(serde_json::from_str::<ConversionReport>(&json).is_ok());
     }
 }
