@@ -133,4 +133,31 @@ mod tests {
             DiagnosticSeverity::Warning
         );
     }
+
+    #[test]
+    fn maps_requested_default_boundaries() {
+        assert_eq!(normalize_default("(((42)))").expression, "42");
+        assert_eq!(normalize_default("(('hello'))").expression, "'hello'");
+        assert_eq!(normalize_default("(N'it''s')").expression, "'it''s'");
+        assert_eq!(
+            normalize_default("('2024-01-02T03:04:05')").expression,
+            "'2024-01-02T03:04:05'"
+        );
+        assert_eq!(
+            normalize_default("((GETDATE()))").expression,
+            "CURRENT_TIMESTAMP"
+        );
+
+        for unsupported in ["(12.50)", "(NEWID())", "(DATEADD(day, 1, GETDATE()))"] {
+            let normalized = normalize_default(unsupported);
+            assert_eq!(normalized.expression, "");
+            assert_eq!(
+                normalized.diagnostics[0].severity,
+                DiagnosticSeverity::Warning
+            );
+            assert!(normalized.diagnostics[0]
+                .message
+                .contains("not safely portable"));
+        }
+    }
 }

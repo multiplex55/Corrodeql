@@ -255,6 +255,23 @@ mod tests {
     }
 
     #[test]
+    fn validates_exact_headers_in_schema_order() {
+        let rows = read_all(
+            "Id,Name\n1,Alpha\n",
+            &table(vec![
+                col("Id", SqlServerType::Int),
+                col("Name", SqlServerType::Text),
+            ]),
+            Default::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            rows[0].values,
+            vec![Value::Integer(1), Value::Text("Alpha".to_owned())]
+        );
+    }
+
+    #[test]
     fn converts_null_token_to_sql_null() {
         let rows = read_all(
             "Name\n\\N\n",

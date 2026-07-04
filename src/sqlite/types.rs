@@ -74,4 +74,68 @@ mod tests {
             StorageClass::Blob
         );
     }
+
+    #[test]
+    fn maps_requested_type_boundaries_and_unsupported_to_project_storage() {
+        use crate::mssql::types::normalize_type;
+
+        let text_types = [
+            SqlServerType::NVarChar {
+                length: Some(50),
+                max: false,
+            },
+            SqlServerType::VarChar {
+                length: Some(50),
+                max: false,
+            },
+        ];
+        for data_type in text_types {
+            assert_eq!(sqlite_affinity(&data_type), StorageClass::Text);
+        }
+
+        for data_type in [
+            SqlServerType::Int,
+            SqlServerType::BigInt,
+            SqlServerType::Bit,
+        ] {
+            assert_eq!(sqlite_affinity(&data_type), StorageClass::Integer);
+        }
+
+        for data_type in [
+            SqlServerType::Money,
+            SqlServerType::Decimal {
+                precision: Some(18),
+                scale: Some(2),
+            },
+        ] {
+            let normalized = normalize_type(&data_type);
+            assert_eq!(normalized.sqlite_affinity, StorageClass::Text);
+            assert!(normalized.diagnostics[0]
+                .message
+                .contains("preserve precision"));
+        }
+
+        assert_eq!(sqlite_affinity(&SqlServerType::Date), StorageClass::Text);
+        assert_eq!(
+            sqlite_affinity(&SqlServerType::DateTime),
+            StorageClass::Text
+        );
+        assert_eq!(
+            sqlite_affinity(&SqlServerType::DateTime2 { scale: Some(7) }),
+            StorageClass::Text
+        );
+        assert_eq!(
+            sqlite_affinity(&SqlServerType::UniqueIdentifier),
+            StorageClass::Text
+        );
+
+        let unsupported = normalize_type(&SqlServerType::Other {
+            name: "hierarchyid".to_owned(),
+            arguments: Vec::new(),
+        });
+        assert_eq!(unsupported.sqlite_affinity, StorageClass::Text);
+        assert!(unsupported.diagnostics[0]
+            .message
+            .contains("unknown SQL Server type 'hierarchyid'"));
+    }
 }

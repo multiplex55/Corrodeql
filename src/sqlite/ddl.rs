@@ -1001,6 +1001,76 @@ mod tests {
     }
 
     #[test]
+    fn requested_constraints_indexes_defaults_and_order_are_deterministic() {
+        let mut parent = table("dbo", "Parent", vec![col("Id", SqlServerType::Int, false)]);
+        parent.primary_key = Some(PrimaryKeyDef {
+            name: Some("PK_Parent".into()),
+            columns: vec!["Id".into()],
+            clustered: None,
+        });
+
+        let mut code = col("Code", SqlServerType::Text, false);
+        code.default = Some(crate::schema::model::DefaultConstraintDef {
+            name: Some("DF_Child_Code".into()),
+            expression: "('x')".into(),
+        });
+        let mut child = table(
+            "dbo",
+            "Child",
+            vec![
+                col("ParentId", SqlServerType::Int, false),
+                col("LineNo", SqlServerType::Int, false),
+                code,
+            ],
+        );
+        child.primary_key = Some(PrimaryKeyDef {
+            name: Some("PK_Child".into()),
+            columns: vec!["ParentId".into(), "LineNo".into()],
+            clustered: None,
+        });
+        child.unique_constraints.push(UniqueConstraintDef {
+            name: Some("UQ_Child_Code".into()),
+            columns: vec!["Code".into()],
+        });
+        child.foreign_keys.push(ForeignKeyDef {
+            name: Some("FK_Child_Parent".into()),
+            columns: vec!["ParentId".into()],
+            referenced_table: parent.name.clone(),
+            referenced_columns: vec!["Id".into()],
+            on_delete: None,
+            on_update: None,
+        });
+        child.check_constraints.push(CheckConstraintDef {
+            name: Some("CK_Child_LineNo".into()),
+            expression: "LineNo > 0".into(),
+        });
+        let index = IndexDef {
+            name: "IX_Child_Code".into(),
+            table: child.name.clone(),
+            columns: vec!["Code".into()],
+            unique: false,
+            clustered: None,
+            filter: None,
+        };
+        let schema = DatabaseSchema {
+            tables: vec![parent, child],
+            indexes: vec![index],
+            diagnostics: vec![],
+            statement_summary: Default::default(),
+        };
+
+        let first = schema_sql(&schema, &ConvertOptions::default()).unwrap();
+        let second = schema_sql(&schema, &ConvertOptions::default()).unwrap();
+        assert_eq!(first, second);
+        assert!(first.contains("PRIMARY KEY (\"ParentId\", \"LineNo\")"));
+        assert!(first.contains("UNIQUE (\"Code\")"));
+        assert!(first.contains("FOREIGN KEY (\"ParentId\") REFERENCES \"dbo_Parent\" (\"Id\")"));
+        assert!(first.contains("CHECK (LineNo > 0)"));
+        assert!(first.contains("DEFAULT 'x'"));
+        assert!(first.contains("CREATE INDEX \"IX_Child_Code\""));
+    }
+
+    #[test]
     fn schema_sql_is_deterministic_across_runs() {
         let schema = DatabaseSchema {
             tables: vec![table(

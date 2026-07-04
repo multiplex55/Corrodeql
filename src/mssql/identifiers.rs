@@ -217,4 +217,19 @@ mod tests {
         let error = parse_object_name_result("[Broken").unwrap_err();
         assert!(error.message.contains("unterminated bracketed identifier"));
     }
+
+    #[test]
+    fn parses_requested_identifier_boundary_cases() {
+        assert_eq!(
+            parse_object_name("[dbo].[Order]"),
+            Some(TableName::new(Some("dbo".to_owned()), "Order"))
+        );
+        assert_eq!(
+            parse_object_name("Customer"),
+            Some(TableName::new(Some("dbo".to_owned()), "Customer"))
+        );
+        assert_eq!(parse_identifier("[select]").unwrap().0, "select");
+        assert_eq!(parse_identifier("[has space]").unwrap().0, "has space");
+        assert_eq!(parse_identifier("[has]]bracket]").unwrap().0, "has]bracket");
+    }
 }

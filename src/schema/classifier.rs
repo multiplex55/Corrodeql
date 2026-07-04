@@ -254,4 +254,25 @@ mod tests {
             assert_eq!(classify_text(sql), kind);
         }
     }
+
+    #[test]
+    fn unsupported_top_level_statements_are_warnings_in_summary() {
+        let batches = crate::schema::preprocessor::preprocess(
+            "CREATE TABLE T (Id int); ALTER TABLE T ADD CONSTRAINT CK CHECK (Id > 0); CREATE INDEX IX_T_Id ON T (Id); CREATE VIEW V AS SELECT 1;",
+        )
+        .unwrap();
+        let classified = classify_batches(&batches);
+        let summary = summarize(&classified);
+
+        assert_eq!(summary.detected.get(&StatementKind::CreateTable), Some(&1));
+        assert_eq!(
+            summary
+                .detected
+                .get(&StatementKind::AlterTableAddConstraint),
+            Some(&1)
+        );
+        assert_eq!(summary.detected.get(&StatementKind::CreateIndex), Some(&1));
+        assert_eq!(summary.ignored.get(&StatementKind::CreateView), Some(&1));
+        assert_eq!(summary.warnings.get(&StatementKind::CreateView), Some(&1));
+    }
 }

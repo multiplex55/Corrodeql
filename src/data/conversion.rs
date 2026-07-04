@@ -155,6 +155,49 @@ mod tests {
     }
 
     #[test]
+    fn converts_requested_csv_value_boundaries() {
+        let cases = [
+            (
+                "Name",
+                SqlServerType::Text,
+                "hello",
+                Value::Text("hello".to_owned()),
+            ),
+            ("Id", SqlServerType::Int, "42", Value::Integer(42)),
+            (
+                "Amount",
+                SqlServerType::Money,
+                "12.3400",
+                Value::Text("12.3400".to_owned()),
+            ),
+            (
+                "When",
+                SqlServerType::Date,
+                "2024-01-02",
+                Value::Text("2024-01-02".to_owned()),
+            ),
+            ("Flag", SqlServerType::Bit, "1", Value::Integer(1)),
+            ("Flag", SqlServerType::Bit, "false", Value::Integer(0)),
+            (
+                "Guid",
+                SqlServerType::UniqueIdentifier,
+                "00000000-0000-0000-0000-000000000000",
+                Value::Text("00000000-0000-0000-0000-000000000000".to_owned()),
+            ),
+        ];
+        for (name, data_type, raw, expected) in cases {
+            assert_eq!(
+                convert_csv_value(&table(), &column(name, data_type), 2, raw, None).unwrap(),
+                expected
+            );
+        }
+        assert_eq!(
+            convert_csv_value(&table(), &column("Name", SqlServerType::Text), 2, "", None).unwrap(),
+            Value::Text(String::new())
+        );
+    }
+
+    #[test]
     fn converts_null_token_before_type_parsing() {
         let value =
             convert_csv_value(&table(), &column("Id", SqlServerType::Int), 2, r"\N", None).unwrap();
