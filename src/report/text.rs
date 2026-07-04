@@ -6,14 +6,17 @@ pub fn render(report: &ConversionReport) -> String {
     let mut output = String::new();
     output.push_str("Conversion Report\n");
     output.push_str("=================\n");
+    output.push_str("\nInputs/options\n");
     output.push_str(&format!("Input schema: {}\n", report.input_schema_path));
     output.push_str(&format!("Data directory: {}\n", report.data_directory));
     output.push_str(&format!(
-        "Output database: {}\n\n",
+        "Output database: {}\n",
         report.output_database_path
     ));
+    output.push_str(&format!("Table naming mode: {}\n", report.table_name_mode));
+    output.push_str(&format!("Null token: {}\n\n", report.null_token));
 
-    output.push_str("Schema Summary\n");
+    output.push_str("Schema summary\n");
     output.push_str(&format!(
         "Tables: {}, Columns: {}, Constraints: {}, Indexes: {}\n",
         report.schema.tables_detected,
@@ -75,7 +78,7 @@ pub fn render(report: &ConversionReport) -> String {
         }
     }
 
-    output.push_str("\nImport Summary\n");
+    output.push_str("\nTables discovered/imported\n");
     output.push_str(&format!(
         "Rows read={}, inserted={}, rejected={}\n",
         report.import.rows_read, report.import.rows_inserted, report.import.rows_rejected
@@ -95,6 +98,75 @@ pub fn render(report: &ConversionReport) -> String {
         }
     }
 
+    output.push_str("\nRows imported per table\n");
+    for table in &report.import.tables {
+        output.push_str(&format!(
+            "- {}: {} inserted ({} read, {} rejected)\n",
+            table.source_table, table.rows_inserted, table.rows_read, table.rows_rejected
+        ));
+    }
+
+    output.push_str("\nRow-count validation\n");
+    output.push_str(&format!(
+        "Status: {:?}\n",
+        report.row_count_validation.status
+    ));
+    for diagnostic in &report.row_count_validation.diagnostics {
+        output.push_str(&format!(
+            "- {:?}: {}\n",
+            diagnostic.severity, diagnostic.message
+        ));
+    }
+
+    output.push_str("\nForeign-key validation\n");
+    output.push_str(&format!(
+        "Attempted: {}, skipped: {}, violations: {}\n",
+        report.foreign_key_validation.attempted,
+        report.foreign_key_validation.skipped,
+        report.foreign_key_validation.violations.len()
+    ));
+
+    output.push_str("\nIntegrity check\n");
+    output.push_str(&format!(
+        "Success: {}, results: {}\n",
+        report.integrity_check.success,
+        if report.integrity_check.results.is_empty() {
+            "<no rows>".to_owned()
+        } else {
+            report.integrity_check.results.join("; ")
+        }
+    ));
+
+    output.push_str("\nMapping warnings\n");
+    for diagnostic in report
+        .type_mapping_warnings
+        .iter()
+        .chain(report.default_mapping_warnings.iter())
+    {
+        output.push_str(&format!(
+            "- {:?}: {}\n",
+            diagnostic.severity, diagnostic.message
+        ));
+    }
+
+    output.push_str("\nSkipped objects\n");
+    for object in &report.skipped_objects {
+        output.push_str(&format!("- {object}\n"));
+    }
+
+    output.push_str("\nUnsupported features\n");
+    for feature in &report.unsupported_sql_server_features {
+        output.push_str(&format!("- {feature}\n"));
+    }
+
+    output.push_str("\nCSV issues\n");
+    for issue in &report.csv_issues {
+        output.push_str(&format!(
+            "- {} ({:?}): {}\n",
+            issue.source_table, issue.csv_path, issue.message
+        ));
+    }
+
     if !report.diagnostics.is_empty() {
         output.push_str("\nDiagnostics\n");
         for diagnostic in &report.diagnostics {
@@ -104,13 +176,6 @@ pub fn render(report: &ConversionReport) -> String {
                 DiagnosticSeverity::Unsupported => "unsupported",
             };
             output.push_str(&format!("- {label}: {}\n", diagnostic.message));
-        }
-    }
-
-    if !report.unsupported_sql_server_features.is_empty() {
-        output.push_str("\nUnsupported SQL Server Features\n");
-        for feature in &report.unsupported_sql_server_features {
-            output.push_str(&format!("- {feature}\n"));
         }
     }
 
