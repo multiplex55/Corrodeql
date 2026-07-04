@@ -10,32 +10,60 @@ pub struct NormalizedDefault {
     pub diagnostics: Vec<SchemaDiagnostic>,
 }
 
-/// Normalizes common SQL Server default expressions for SQLite DDL emission.
+/// Normalizes only SQL Server default expressions that are safe to emit in SQLite DDL.
 pub fn normalize_default(expression: impl AsRef<str>) -> NormalizedDefault {
     let stripped = strip_redundant_parens(expression.as_ref().trim());
-    let upper = stripped.to_ascii_uppercase();
-    let compact_upper = upper.split_whitespace().collect::<String>();
-    let (expression, diagnostic) = match compact_upper.as_str() {
-        "GETDATE()" => ("CURRENT_TIMESTAMP".to_owned(), None),
-        "NEWID()" => (
-            "lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' || substr(hex(randomblob(2)),2) || '-' || substr('89ab',abs(random()) % 4 + 1,1) || substr(hex(randomblob(2)),2) || '-' || hex(randomblob(6)))".to_owned(),
-            Some("NEWID() converted to a SQLite randomblob()-based UUID expression"),
-        ),
-        _ => (stripped.to_owned(), None),
+    let compact_upper = stripped
+        .to_ascii_uppercase()
+        .split_whitespace()
+        .collect::<String>();
+    let expression = match compact_upper.as_str() {
+        "GETDATE()" | "SYSUTCDATETIME()" => Some("CURRENT_TIMESTAMP".to_owned()),
+        _ if is_integer_literal(stripped) => Some(stripped.to_owned()),
+        _ => normalize_string_literal(stripped),
+    };
+
+    let diagnostics = if expression.is_none() {
+        vec![SchemaDiagnostic {
+            severity: DiagnosticSeverity::Warning,
+            message: format!(
+                "default expression {} is not safely portable to SQLite DDL",
+                stripped
+            ),
+            line: None,
+            column: None,
+        }]
+    } else {
+        Vec::new()
     };
 
     NormalizedDefault {
-        expression,
-        diagnostics: diagnostic
-            .map(|message| SchemaDiagnostic {
-                severity: DiagnosticSeverity::Warning,
-                message: message.to_owned(),
-                line: None,
-                column: None,
-            })
-            .into_iter()
-            .collect(),
+        expression: expression.unwrap_or_default(),
+        diagnostics,
     }
+}
+
+fn is_integer_literal(s: &str) -> bool {
+    let rest = s.strip_prefix('-').unwrap_or(s);
+    !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit())
+}
+
+fn normalize_string_literal(s: &str) -> Option<String> {
+    let literal = s
+        .strip_prefix('N')
+        .or_else(|| s.strip_prefix('n'))
+        .unwrap_or(s);
+    if literal.len() < 2 || !literal.starts_with('\'') || !literal.ends_with('\'') {
+        return None;
+    }
+    let inner = &literal[1..literal.len() - 1];
+    let mut chars = inner.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\'' && chars.next() != Some('\'') {
+            return None;
+        }
+    }
+    Some(format!("'{}'", inner))
 }
 
 fn strip_redundant_parens(mut s: &str) -> &str {
@@ -81,10 +109,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn normalizes_nested_parentheses_and_literals() {
+    fn normalizes_nested_parentheses_and_safe_literals() {
         assert_eq!(normalize_default("((0))").expression, "0");
         assert_eq!(normalize_default("(('abc'))").expression, "'abc'");
-        assert_eq!(normalize_default("(12.50)").expression, "12.50");
+        assert_eq!(normalize_default("(N'a''bc')").expression, "'a''bc'");
+        assert_eq!(normalize_default("(12.50)").expression, "");
     }
 
     #[test]
@@ -96,9 +125,9 @@ mod tests {
     }
 
     #[test]
-    fn converts_newid_with_warning() {
+    fn rejects_newid() {
         let normalized = normalize_default("NEWID()");
-        assert!(normalized.expression.contains("randomblob"));
+        assert_eq!(normalized.expression, "");
         assert_eq!(
             normalized.diagnostics[0].severity,
             DiagnosticSeverity::Warning
