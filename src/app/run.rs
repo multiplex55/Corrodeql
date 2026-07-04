@@ -159,11 +159,112 @@ fn run_convert_with_options(options: ConvertOptions) -> Result<()> {
     Ok(())
 }
 
-/// Placeholder implementation for `corrodeql inspect-schema`.
+/// Inspects an input schema and prints stable schema metadata.
 pub fn run_inspect_schema(args: InspectSchemaArgs) -> Result<()> {
     validate_schema_path(args.schema.as_deref())?;
-    println!("inspect-schema is not yet implemented; no schema inspection was attempted");
+    let schema_path = args
+        .schema
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("schema file path is required"))?;
+    let schema_text = fs::read_to_string(schema_path)
+        .with_context(|| format!("failed to read schema file {}", schema_path.display()))?;
+
+    let parsed_schema =
+        parser::parse_with_options(&schema_text, &core_options::ConvertOptions::default());
+    let has_errors = parsed_schema
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == schema_model::DiagnosticSeverity::Error);
+    let schema = crate::mssql::normalize(parsed_schema);
+
+    print_inspect_schema_summary(&schema);
+
+    if has_errors {
+        bail!("schema inspection found parse errors");
+    }
+
     Ok(())
+}
+
+fn print_inspect_schema_summary(schema: &schema_model::DatabaseSchema) {
+    println!("Tables:");
+    for table in &schema.tables {
+        println!("  {}", display_table_name(&table.name));
+        println!("    columns: {}", table.columns.len());
+        println!("    primary key: {}", primary_key_columns(table));
+        println!("    foreign keys: {}", foreign_key_names(table));
+    }
+
+    println!();
+    println!("Indexes:");
+    if schema.indexes.is_empty() {
+        println!("  none");
+    } else {
+        for index in &schema.indexes {
+            println!("  {}", index.name);
+        }
+    }
+
+    let warnings: Vec<_> = schema
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| {
+            matches!(
+                diagnostic.severity,
+                schema_model::DiagnosticSeverity::Warning
+                    | schema_model::DiagnosticSeverity::Unsupported
+            )
+        })
+        .collect();
+    if !warnings.is_empty() {
+        println!();
+        println!("Warnings:");
+        for diagnostic in warnings {
+            println!("  {}", diagnostic.message);
+        }
+    }
+
+    let errors: Vec<_> = schema
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == schema_model::DiagnosticSeverity::Error)
+        .collect();
+    if !errors.is_empty() {
+        println!();
+        println!("Errors:");
+        for diagnostic in errors {
+            println!("  {}", diagnostic.message);
+        }
+    }
+}
+
+fn display_table_name(name: &schema_model::TableName) -> String {
+    match &name.schema {
+        Some(schema) => format!("{schema}.{}", name.table),
+        None => name.table.clone(),
+    }
+}
+
+fn primary_key_columns(table: &schema_model::TableDef) -> String {
+    table
+        .primary_key
+        .as_ref()
+        .filter(|primary_key| !primary_key.columns.is_empty())
+        .map(|primary_key| primary_key.columns.join(", "))
+        .unwrap_or_else(|| "none".to_owned())
+}
+
+fn foreign_key_names(table: &schema_model::TableDef) -> String {
+    let names = table
+        .foreign_keys
+        .iter()
+        .map(|foreign_key| foreign_key.name.as_deref().unwrap_or("<unnamed>"))
+        .collect::<Vec<_>>();
+    if names.is_empty() {
+        "none".to_owned()
+    } else {
+        names.join(", ")
+    }
 }
 
 /// Placeholder implementation for `corrodeql emit-ddl`.
