@@ -280,3 +280,48 @@ fn allow_extra_csv_columns_ignores_extra_values() {
         .unwrap();
     assert_eq!(name, "Gear");
 }
+
+#[test]
+fn related_child_rows_import_before_parent_and_validate_after_import() {
+    let root = temp_root("deferred-fk-validation");
+    let schema = root.join("schema.sql");
+    let data_dir = root.join("csv");
+    let db = root.join("out.sqlite");
+    fs::create_dir_all(&data_dir).unwrap();
+    fs::write(
+        &schema,
+        "CREATE TABLE [dbo].[Child] (\n  [Id] int NOT NULL,\n  [ParentId] int NOT NULL,\n  CONSTRAINT [PK_Child] PRIMARY KEY ([Id]),\n  CONSTRAINT [FK_Child_Parent] FOREIGN KEY ([ParentId]) REFERENCES [dbo].[Parent] ([Id])\n);\nCREATE TABLE [dbo].[Parent] (\n  [Id] int NOT NULL,\n  CONSTRAINT [PK_Parent] PRIMARY KEY ([Id])\n);\n",
+    )
+    .unwrap();
+    fs::write(data_dir.join("dbo.Child.csv"), "Id,ParentId\n10,1\n").unwrap();
+    fs::write(data_dir.join("dbo.Parent.csv"), "Id\n1\n").unwrap();
+
+    run_with_args([
+        "corrodeql".into(),
+        "convert".into(),
+        "--schema".into(),
+        schema.into_os_string(),
+        "--data-dir".into(),
+        data_dir.into_os_string(),
+        "--out".into(),
+        db.clone().into_os_string(),
+    ])
+    .unwrap();
+
+    let connection = rusqlite::Connection::open(&db).unwrap();
+    let child_rows: i64 = connection
+        .query_row("SELECT COUNT(*) FROM dbo_Child", [], |row| row.get(0))
+        .unwrap();
+    let parent_rows: i64 = connection
+        .query_row("SELECT COUNT(*) FROM dbo_Parent", [], |row| row.get(0))
+        .unwrap();
+    let fk_violations: i64 = connection
+        .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+
+    assert_eq!(child_rows, 1);
+    assert_eq!(parent_rows, 1);
+    assert_eq!(fk_violations, 0);
+}

@@ -101,6 +101,7 @@ fn run_convert_with_options(options: ConvertOptions) -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("output SQLite path is not valid UTF-8"))?;
     let mut connection = database::create_output_connection(output_path, options.overwrite)
         .with_context(|| format!("failed to create SQLite database {}", options.out.display()))?;
+    database::apply_import_pragmas(&connection).context("failed to apply SQLite import PRAGMAs")?;
     let import_report =
         match sqlite_import::import_database(&mut connection, &schema, &core_options) {
             Ok(report) => report,
@@ -116,6 +117,8 @@ fn run_convert_with_options(options: ConvertOptions) -> Result<()> {
                 return Err(error.into());
             }
         };
+    database::enable_foreign_keys(&connection)
+        .context("failed to enable SQLite foreign-key enforcement before validation")?;
     let validation = sqlite_validate::validate_database(&connection, &schema, &core_options)
         .context("failed to validate SQLite database after import")?;
     let report_validation = report_validation_from_sqlite(&validation);
