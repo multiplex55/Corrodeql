@@ -272,6 +272,75 @@ fn import_failure_after_ddl_generation_still_writes_reports() {
 }
 
 #[test]
+fn import_failure_reports_partial_progress_for_completed_and_failed_tables() {
+    let root = temp_root("partial-import-progress");
+    let schema = root.join("schema.sql");
+    let data_dir = root.join("csv");
+    let db = root.join("out.sqlite");
+    let report_dir = root.join("reports");
+    fs::create_dir_all(&data_dir).unwrap();
+    fs::write(
+        &schema,
+        "CREATE TABLE [dbo].[Alpha] (\n  [Id] int NOT NULL\n);\nCREATE TABLE [dbo].[Zebra] (\n  [Id] int NOT NULL\n);\n",
+    )
+    .unwrap();
+    fs::write(data_dir.join("dbo.Alpha.csv"), "Id\n1\n2\n").unwrap();
+    fs::write(data_dir.join("dbo.Zebra.csv"), "Id\n10\nnot-an-int\n30\n").unwrap();
+
+    let result = run_with_args([
+        "corrodeql".into(),
+        "convert".into(),
+        "--schema".into(),
+        schema.into_os_string(),
+        "--data-dir".into(),
+        data_dir.clone().into_os_string(),
+        "--out".into(),
+        db.into_os_string(),
+        "--report-dir".into(),
+        report_dir.clone().into_os_string(),
+        "--strict".into(),
+    ]);
+
+    assert!(result.is_err());
+    let text_report = fs::read_to_string(report_dir.join("conversion_report.txt")).unwrap();
+    assert!(text_report
+        .contains("[dbo].[Alpha] -> \"dbo_Alpha\": Imported (read=2, inserted=2, rejected=0)"));
+    assert!(text_report
+        .contains("[dbo].[Zebra] -> \"dbo_Zebra\": Failed (read=2, inserted=1, rejected=0)"));
+    assert!(text_report.contains("invalid value"));
+
+    let report: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(report_dir.join("conversion_report.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(report["import"]["rows_read"], 4);
+    assert_eq!(report["import"]["rows_inserted"], 3);
+    assert_eq!(
+        report["import"]["tables"][0]["source_table"],
+        "[dbo].[Alpha]"
+    );
+    assert_eq!(report["import"]["tables"][0]["status"], "imported");
+    assert_eq!(report["import"]["tables"][0]["rows_read"], 2);
+    assert_eq!(report["import"]["tables"][0]["rows_inserted"], 2);
+    assert_eq!(
+        report["import"]["tables"][1]["source_table"],
+        "[dbo].[Zebra]"
+    );
+    assert_eq!(report["import"]["tables"][1]["sqlite_table"], "dbo_Zebra");
+    assert_eq!(
+        report["import"]["tables"][1]["csv_path"],
+        data_dir.join("dbo.Zebra.csv").display().to_string()
+    );
+    assert_eq!(report["import"]["tables"][1]["status"], "failed");
+    assert_eq!(report["import"]["tables"][1]["rows_read"], 2);
+    assert_eq!(report["import"]["tables"][1]["rows_inserted"], 1);
+    assert!(report["import"]["tables"][1]["diagnostics"][0]
+        .as_str()
+        .unwrap()
+        .contains("[dbo].[Zebra]"));
+}
+
+#[test]
 fn missing_csv_fails_by_default_and_allow_missing_creates_empty_table() {
     let root = temp_root("missing-csv");
     let schema = root.join("schema.sql");
