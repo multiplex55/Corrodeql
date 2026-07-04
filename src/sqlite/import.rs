@@ -33,7 +33,7 @@ pub fn import_database(
         &options.data_dir,
         schema,
         ManifestOptions {
-            strict: options.strict,
+            strict: true,
             allow_missing_csv: options.allow_missing_csv,
         },
     )?;
