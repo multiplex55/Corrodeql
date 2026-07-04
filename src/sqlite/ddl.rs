@@ -61,6 +61,7 @@ pub fn generate_indexes(schema: &DatabaseSchema, options: &ConvertOptions) -> Re
             &mut used_index_names,
             &mut duplicate_counts,
             &mut generated.diagnostics,
+            options,
         ) {
             generated.statements.push(statement);
         }
@@ -280,12 +281,13 @@ fn index_statement(
     used_index_names: &mut HashSet<String>,
     duplicate_counts: &mut HashMap<String, usize>,
     diagnostics: &mut Vec<SchemaDiagnostic>,
+    options: &ConvertOptions,
 ) -> Option<Statement> {
     if index.columns.is_empty() {
-        diagnostics.push(unsupported(format!(
-            "index {} has no columns and was not emitted",
-            index.name
-        )));
+        diagnostics.push(unsupported_index(
+            format!("index {} has no columns and was not emitted", index.name),
+            options,
+        ));
         return None;
     }
     warn_clustered(index.clustered, diagnostics, "index", &index.table);
@@ -412,6 +414,19 @@ fn warn_clustered(
 fn warning(message: String) -> SchemaDiagnostic {
     SchemaDiagnostic {
         severity: DiagnosticSeverity::Warning,
+        message,
+        line: None,
+        column: None,
+    }
+}
+
+fn unsupported_index(message: String, options: &ConvertOptions) -> SchemaDiagnostic {
+    SchemaDiagnostic {
+        severity: if options.ignore_unsupported_indexes {
+            DiagnosticSeverity::Warning
+        } else {
+            DiagnosticSeverity::Error
+        },
         message,
         line: None,
         column: None,

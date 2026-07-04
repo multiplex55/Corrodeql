@@ -611,3 +611,81 @@ fn row_count_manifest_mismatch_fails_conversion() {
 
     assert!(result.is_err());
 }
+
+#[test]
+fn extra_csv_column_fails_by_default() {
+    let root = temp_root("extra-columns-default");
+    let schema = root.join("schema.sql");
+    let data_dir = root.join("csv");
+    fs::create_dir_all(&data_dir).unwrap();
+    fs::write(&schema, include_str!("fixtures/simple_schema.sql")).unwrap();
+    fs::write(data_dir.join("dbo.Widget.csv"), "Id,Name,Extra\n1,Gear,x\n").unwrap();
+
+    let result = run_with_args([
+        "corrodeql".into(),
+        "convert".into(),
+        "--schema".into(),
+        schema.into_os_string(),
+        "--data-dir".into(),
+        data_dir.into_os_string(),
+        "--out".into(),
+        root.join("out.sqlite").into_os_string(),
+    ]);
+
+    assert!(result.is_err());
+}
+
+#[test]
+fn unsupported_index_fails_by_default_and_is_reported_when_ignored() {
+    let root = temp_root("unsupported-index");
+    let schema = root.join("schema.sql");
+    let data_dir = root.join("csv");
+    let report_dir = root.join("reports");
+    fs::create_dir_all(&data_dir).unwrap();
+    fs::write(
+        &schema,
+        "CREATE TABLE [dbo].[Widget] (\n  [Id] int NOT NULL,\n  [Name] nvarchar(50) NULL\n);\nCREATE INDEX [IX_Widget_Name] ON [dbo].[Widget] ([Name]) INCLUDE ([Id]);\n",
+    )
+    .unwrap();
+    fs::write(data_dir.join("dbo.Widget.csv"), "Id,Name\n1,Gear\n").unwrap();
+
+    let fail = run_with_args([
+        "corrodeql".into(),
+        "convert".into(),
+        "--schema".into(),
+        schema.clone().into_os_string(),
+        "--data-dir".into(),
+        data_dir.clone().into_os_string(),
+        "--out".into(),
+        root.join("fail.sqlite").into_os_string(),
+    ]);
+    assert!(fail.is_err());
+
+    run_with_args([
+        "corrodeql".into(),
+        "convert".into(),
+        "--schema".into(),
+        schema.into_os_string(),
+        "--data-dir".into(),
+        data_dir.into_os_string(),
+        "--out".into(),
+        root.join("ok.sqlite").into_os_string(),
+        "--report-dir".into(),
+        report_dir.clone().into_os_string(),
+        "--ignore-unsupported-indexes".into(),
+    ])
+    .unwrap();
+
+    let report: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(report_dir.join("conversion_report.json")).unwrap(),
+    )
+    .unwrap();
+    let diagnostics = report["diagnostics"].as_array().unwrap();
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic["message"]
+            .as_str()
+            .unwrap()
+            .contains("unsupported INCLUDE columns on index IX_Widget_Name")
+            && diagnostic["severity"] == "warning"
+    }));
+}

@@ -22,6 +22,7 @@ pub struct ConvertOptions {
     pub allow_missing_csv: bool,
     pub allow_extra_csv_columns: bool,
     pub skip_foreign_key_check: bool,
+    pub ignore_unsupported_indexes: bool,
     pub dry_run: bool,
 }
 
@@ -101,6 +102,7 @@ pub fn merge_convert_options(
         allow_missing_csv: args.allow_missing_csv,
         allow_extra_csv_columns: args.allow_extra_csv_columns,
         skip_foreign_key_check: args.skip_foreign_key_check,
+        ignore_unsupported_indexes: args.ignore_unsupported_indexes,
         dry_run: args.dry_run,
     })
 }
@@ -218,6 +220,7 @@ mod tests {
             allow_missing_csv: true,
             allow_extra_csv_columns: true,
             skip_foreign_key_check: true,
+            ignore_unsupported_indexes: true,
             dry_run: true,
         }
     }

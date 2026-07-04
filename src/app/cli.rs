@@ -83,6 +83,10 @@ pub struct ConvertArgs {
     #[arg(long)]
     pub skip_foreign_key_check: bool,
 
+    /// Downgrade unsupported index constructs to reported warnings.
+    #[arg(long)]
+    pub ignore_unsupported_indexes: bool,
+
     /// Validate command routing and inputs without writing output.
     #[arg(long)]
     pub dry_run: bool,
