@@ -88,6 +88,8 @@ fn import_table(
     options: &ConvertOptions,
 ) -> Result<TableImportReport> {
     let insert_sql = insert_statement(table, sqlite_name);
+    // Prepare the INSERT once and reuse it for each streamed CSV row; this keeps import memory
+    // usage independent of CSV length and avoids per-row statement compilation.
     let mut statement = connection.prepare(&insert_sql)?;
     let reader = CsvReader::from_path(
         path,
@@ -114,9 +116,25 @@ fn import_table(
         match row {
             Ok(row) => match statement.execute(params_from_iter(row.values)) {
                 Ok(_) => report.rows_inserted += 1,
-                Err(error) => return Err(Error::Sqlite(error)),
+                Err(error) => {
+                    return Err(import_table_error(
+                        table,
+                        sqlite_name,
+                        path,
+                        row.row_number,
+                        error.to_string(),
+                    ));
+                }
             },
-            Err(error) if options.strict => return Err(error),
+            Err(error) if options.strict => {
+                return Err(import_table_error(
+                    table,
+                    sqlite_name,
+                    path,
+                    row_number_from_error(&error).unwrap_or(report.rows_read),
+                    error.to_string(),
+                ));
+            }
             Err(error) => {
                 report.rows_rejected += 1;
                 report.status = TableImportStatus::Partial;
@@ -145,6 +163,29 @@ fn insert_statement(table: &TableDef, sqlite_name: &Name) -> String {
     )
 }
 
+fn import_table_error(
+    table: &TableDef,
+    sqlite_name: &Name,
+    path: &Utf8PathBuf,
+    row_number: u64,
+    message: String,
+) -> Error {
+    Error::ImportTable {
+        source_table: table.name.display_sql_server(),
+        sqlite_table: sqlite_name.0.clone(),
+        csv_path: path.to_string(),
+        row_number,
+        message,
+    }
+}
+
+fn row_number_from_error(error: &Error) -> Option<u64> {
+    match error {
+        Error::CsvReadImport { row_number, .. } => Some(*row_number),
+        _ => None,
+    }
+}
+
 fn validation_error(message: String) -> Error {
     Error::Validation { message }
 }
@@ -158,7 +199,9 @@ mod tests {
     use rusqlite::Connection;
 
     use super::*;
-    use crate::schema::model::{ColumnDef, IndexDef, SqlServerType, TableDef, TableName};
+    use crate::schema::model::{
+        ColumnDef, IndexDef, PrimaryKeyDef, SqlServerType, TableDef, TableName,
+    };
 
     fn temp_dir(name: &str) -> Utf8PathBuf {
         let unique = SystemTime::now()
@@ -255,6 +298,100 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM dbo_Widget", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn successful_import_tracks_rows_read_and_inserted() {
+        let dir = temp_dir("row-counts");
+        write_csv(&dir, "dbo.Widget.csv", "Id,Name\n1,Gear\n2,Bolt\n3,Nut\n");
+        let schema = schema(vec![table(
+            "Widget",
+            vec![
+                column("Id", SqlServerType::Int, false),
+                column("Name", SqlServerType::Text, true),
+            ],
+        )]);
+        let mut conn = Connection::open_in_memory().unwrap();
+
+        let report = import_database(&mut conn, &schema, &options(dir)).unwrap();
+
+        assert_eq!(report.rows_read, 3);
+        assert_eq!(report.rows_inserted, 3);
+        assert_eq!(report.rows_rejected, 0);
+        assert_eq!(report.tables[0].rows_read, 3);
+        assert_eq!(report.tables[0].rows_inserted, 3);
+    }
+
+    #[test]
+    fn strict_conversion_error_includes_table_and_csv_path() {
+        let dir = temp_dir("strict-context");
+        let csv_path = dir.join("dbo.Widget.csv");
+        write_csv(&dir, "dbo.Widget.csv", "Id\n1\nnot-int\n");
+        let schema = schema(vec![table(
+            "Widget",
+            vec![column("Id", SqlServerType::Int, false)],
+        )]);
+        let mut conn = Connection::open_in_memory().unwrap();
+        let mut opts = options(dir);
+        opts.strict = true;
+
+        let error = import_database(&mut conn, &schema, &opts).unwrap_err();
+        let display = error.to_string();
+
+        assert!(display.contains("[dbo].[Widget]"), "{display}");
+        assert!(display.contains("dbo_Widget"), "{display}");
+        assert!(display.contains(csv_path.as_str()), "{display}");
+        assert!(display.contains("row 3"), "{display}");
+        assert!(display.contains("invalid value"), "{display}");
+    }
+
+    #[test]
+    fn sqlite_constraint_failure_includes_table_and_row_number() {
+        let dir = temp_dir("constraint-context");
+        write_csv(&dir, "dbo.Widget.csv", "Id\n1\n1\n");
+        let mut widget = table("Widget", vec![column("Id", SqlServerType::Int, false)]);
+        widget.primary_key = Some(PrimaryKeyDef {
+            name: Some("PK_Widget".to_owned()),
+            columns: vec!["Id".to_owned()],
+            clustered: None,
+        });
+        let schema = schema(vec![widget]);
+        let mut conn = Connection::open_in_memory().unwrap();
+
+        let error = import_database(&mut conn, &schema, &options(dir)).unwrap_err();
+        let display = error.to_string();
+
+        assert!(display.contains("[dbo].[Widget]"), "{display}");
+        assert!(display.contains("dbo_Widget"), "{display}");
+        assert!(display.contains("row 3"), "{display}");
+        assert!(display.contains("UNIQUE constraint failed"), "{display}");
+    }
+
+    #[test]
+    fn imports_streaming_multi_row_csv_without_collecting_records() {
+        let dir = temp_dir("streaming-many");
+        let mut csv = String::from("Id,Name\n");
+        for id in 1..=4096 {
+            csv.push_str(&format!("{id},Widget {id}\n"));
+        }
+        write_csv(&dir, "dbo.Widget.csv", &csv);
+        let schema = schema(vec![table(
+            "Widget",
+            vec![
+                column("Id", SqlServerType::Int, false),
+                column("Name", SqlServerType::Text, true),
+            ],
+        )]);
+        let mut conn = Connection::open_in_memory().unwrap();
+
+        let report = import_database(&mut conn, &schema, &options(dir)).unwrap();
+
+        assert_eq!(report.rows_read, 4096);
+        assert_eq!(report.rows_inserted, 4096);
+        let max_id: i64 = conn
+            .query_row("SELECT MAX(Id) FROM dbo_Widget", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(max_id, 4096);
     }
 
     #[test]
