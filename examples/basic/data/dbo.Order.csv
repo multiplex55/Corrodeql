@@ -1,3 +1,3 @@
-OrderId,CustomerId,OrderDate,Status,Notes
-1001,1,2024-03-01,Shipped,First order
-1002,2,2024-03-05,Pending,
+OrderId,CustomerId,OrderTotal,OrderedAt,IsPaid,Notes
+1001,1,89.99,2024-03-01T10:00:00,1,First order
+1002,2,15.00,2024-03-05T16:30:00,0,

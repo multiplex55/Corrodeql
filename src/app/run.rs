@@ -232,9 +232,10 @@ const BASIC_EXAMPLE_FILES: &[(&str, &str)] = &[
         include_str!("../../examples/basic/data/dbo.Order.csv"),
     ),
     (
-        "data/dbo.OrderLine.csv",
-        include_str!("../../examples/basic/data/dbo.OrderLine.csv"),
+        "row_counts.csv",
+        include_str!("../../examples/basic/row_counts.csv"),
     ),
+    ("README.md", include_str!("../../examples/basic/README.md")),
 ];
 
 /// Writes the bundled `examples/basic` project to disk.
