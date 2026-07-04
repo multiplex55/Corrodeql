@@ -1,4 +1,5 @@
 use super::model::{ConversionReport, DiagnosticSeverity};
+use crate::sqlite::names::quote_identifier;
 
 /// Renders a human-readable conversion report.
 pub fn render(report: &ConversionReport) -> String {
@@ -24,7 +25,7 @@ pub fn render(report: &ConversionReport) -> String {
         output.push_str(&format!(
             "- {} -> {}: columns={}, constraints={}, indexes={}\n",
             table.source_table,
-            table.sqlite_table,
+            quote_identifier(&table.sqlite_table),
             table.columns_detected,
             table.constraints_detected,
             table.indexes_detected
@@ -83,7 +84,7 @@ pub fn render(report: &ConversionReport) -> String {
         output.push_str(&format!(
             "- {} -> {}: {:?} (read={}, inserted={}, rejected={})\n",
             table.source_table,
-            table.sqlite_table,
+            quote_identifier(&table.sqlite_table),
             table.status,
             table.rows_read,
             table.rows_inserted,
@@ -157,7 +158,7 @@ mod tests {
             ..ConversionReport::default()
         };
         let text = render(&report);
-        assert!(text.contains("[dbo].[Widget] -> dbo_Widget"));
+        assert!(text.contains("[dbo].[Widget] -> \"dbo_Widget\""));
         assert!(text.contains("columns: Id, Name"));
     }
 
