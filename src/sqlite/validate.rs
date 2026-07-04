@@ -8,6 +8,7 @@ use crate::config::options::ConvertOptions;
 use crate::data::row_counts::{read_row_count_manifest, ROW_COUNTS_FILE};
 use crate::error::{Error, Result};
 use crate::schema::model::{DatabaseSchema, TableDef, TableName};
+use crate::sqlite::database;
 use crate::sqlite::names::{quote_identifier, table_names_for_schema};
 
 /// Backwards-compatible no-op marker for module-tree smoke tests.
@@ -17,6 +18,8 @@ pub fn validate() {}
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ValidationReport {
     pub tables: Vec<TableValidationReport>,
+    pub foreign_key_check_attempted: bool,
+    pub foreign_key_check_skipped: bool,
     pub foreign_key_violations: Vec<ForeignKeyViolation>,
     pub missing_indexes_or_constraints: Vec<String>,
     pub row_count_validation: RowCountValidationReport,
@@ -193,11 +196,19 @@ pub fn validate_database(
     report.row_count_validation =
         validate_row_counts(schema, options, &row_count_manifest, &report.tables);
 
-    if !options.skip_foreign_key_check {
+    if options.skip_foreign_key_check {
+        report.foreign_key_check_skipped = true;
+    } else {
+        report.foreign_key_check_attempted = true;
         report.foreign_key_violations = foreign_key_violations(connection)?;
     }
 
     Ok(report)
+}
+
+/// Enables SQLite foreign-key enforcement for post-import validation.
+pub fn enable_foreign_keys_for_validation(connection: &Connection) -> Result<()> {
+    database::enable_foreign_keys(connection)
 }
 
 /// Runs SQLite's full database integrity check.
@@ -565,7 +576,42 @@ mod tests {
     }
 
     #[test]
-    fn foreign_key_violation_detection() {
+    fn foreign_key_check_with_no_violations_passes() {
+        let dir = temp_dir("fk-ok");
+        write_csv(&dir, "dbo.Parent.csv", "Id\n1\n");
+        write_csv(&dir, "dbo.Child.csv", "Id,ParentId\n1,1\n");
+        let mut child = table("Child", vec![col("Id", false), col("ParentId", false)]);
+        child.foreign_keys.push(ForeignKeyDef {
+            name: None,
+            columns: vec!["ParentId".to_owned()],
+            referenced_table: TableName::new(Some("dbo".to_owned()), "Parent"),
+            referenced_columns: vec!["Id".to_owned()],
+            on_delete: None,
+            on_update: None,
+        });
+        let schema = schema(vec![parent_table(), child], vec![]);
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch("PRAGMA foreign_keys = OFF;")
+            .unwrap();
+        create_schema(&connection, &schema);
+        connection
+            .execute("INSERT INTO dbo_Parent (Id) VALUES (1)", [])
+            .unwrap();
+        connection
+            .execute("INSERT INTO dbo_Child (Id, ParentId) VALUES (1, 1)", [])
+            .unwrap();
+
+        let report = validate_database(&connection, &schema, &options(dir)).unwrap();
+
+        assert!(report.foreign_key_check_attempted);
+        assert!(!report.foreign_key_check_skipped);
+        assert!(report.foreign_key_violations.is_empty());
+        assert!(report.is_success());
+    }
+
+    #[test]
+    fn invalid_child_rows_are_returned_by_foreign_key_check() {
         let dir = temp_dir("fk");
         write_csv(&dir, "dbo.Parent.csv", "Id\n");
         write_csv(&dir, "dbo.Child.csv", "Id,ParentId\n1,99\n");
@@ -589,7 +635,17 @@ mod tests {
             .unwrap();
 
         let report = validate_database(&connection, &schema, &options(dir)).unwrap();
-        assert_eq!(report.foreign_key_violations.len(), 1);
+        assert!(report.foreign_key_check_attempted);
+        assert!(!report.foreign_key_check_skipped);
+        assert_eq!(
+            report.foreign_key_violations,
+            vec![ForeignKeyViolation {
+                table: "dbo_Child".to_owned(),
+                rowid: Some(1),
+                parent: "dbo_Parent".to_owned(),
+                fkid: 0,
+            }]
+        );
         assert!(!report.is_success());
     }
 
@@ -620,7 +676,10 @@ mod tests {
         opts.skip_foreign_key_check = true;
 
         let report = validate_database(&connection, &schema, &opts).unwrap();
+        assert!(!report.foreign_key_check_attempted);
+        assert!(report.foreign_key_check_skipped);
         assert!(report.foreign_key_violations.is_empty());
+        assert!(report.is_success());
     }
 
     #[test]
