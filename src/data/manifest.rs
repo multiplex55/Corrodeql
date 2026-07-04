@@ -3,6 +3,8 @@ use std::fs;
 
 use camino::{Utf8Path, Utf8PathBuf};
 
+use super::row_counts::ROW_COUNTS_FILE;
+
 use crate::error::{Error, Result};
 use crate::schema::model::{DatabaseSchema, TableName};
 
@@ -68,7 +70,7 @@ impl Manifest {
                     reason: "path is not valid UTF-8",
                 })?;
 
-            if !is_csv_file(&path) {
+            if !is_csv_file(&path) || path.file_name() == Some(ROW_COUNTS_FILE) {
                 continue;
             }
 
