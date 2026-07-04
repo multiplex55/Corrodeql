@@ -103,12 +103,12 @@ pub struct InspectSchemaArgs {
 /// Arguments for `corrodeql emit-ddl`.
 #[derive(Debug, Clone, Args, Default, PartialEq, Eq)]
 pub struct EmitDdlArgs {
-    /// MSSQL schema file to read. If omitted, interactive prompting may ask for it.
-    #[arg(long, value_name = "FILE")]
+    /// MSSQL schema file to read.
+    #[arg(long, value_name = "FILE", required = true)]
     pub schema: Option<PathBuf>,
 
-    /// File to write generated SQLite DDL to. If omitted, DDL may be printed to stdout.
-    #[arg(long, value_name = "FILE")]
+    /// File to write generated SQLite DDL to.
+    #[arg(long, value_name = "FILE", required = true)]
     pub out: Option<PathBuf>,
 }
 
