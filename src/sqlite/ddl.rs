@@ -99,6 +99,7 @@ fn create_table_statement(
 ) -> Statement {
     let table_name = quote_identifier(&table_names[&table.name].0);
     let mut definitions = Vec::new();
+    let mut column_constraints = Vec::new();
 
     let inline_identity_pk = inline_identity_pk_column(table);
 
@@ -146,15 +147,16 @@ fn create_table_statement(
         definitions.push(definition);
 
         if matches!(column.data_type, SqlServerType::Bit) {
-            definitions.push(format!(
+            column_constraints.push(format!(
                 "CHECK ({} IN (0, 1))",
                 quote_identifier(&column.name)
             ));
         }
         if let Some(check) = &column.check {
-            push_check(check, &mut definitions, diagnostics);
+            push_check(check, &mut column_constraints, diagnostics);
         }
     }
+    definitions.extend(column_constraints);
 
     if let Some(primary_key) = &table.primary_key {
         if inline_identity_pk.is_some() {
