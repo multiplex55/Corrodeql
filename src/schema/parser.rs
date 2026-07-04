@@ -79,7 +79,7 @@ fn handle_classified_statement(
         StatementKind::CreateTable
         | StatementKind::AlterTableAddConstraint
         | StatementKind::CreateIndex => {
-            let mut parser = Parser::new(&statement.batch);
+            let mut parser = Parser::new(&statement.batch, options);
             parser.parse_schema_into(tables, indexes);
             diagnostics.extend(parser.diagnostics);
         }
@@ -185,19 +185,23 @@ struct Parser {
     pos: usize,
     diagnostics: Vec<SchemaDiagnostic>,
     line_offset: usize,
+    strict: bool,
+    ignore_unsupported_indexes: bool,
 }
 
 impl Parser {
-    fn new(batch: &SqlBatch) -> Self {
+    fn new(batch: &SqlBatch, options: &ConvertOptions) -> Self {
         Self {
             tokens: lex(&batch.original_text),
             pos: 0,
             diagnostics: Vec::new(),
             line_offset: batch.line_start.saturating_sub(1),
+            strict: options.strict,
+            ignore_unsupported_indexes: options.ignore_unsupported_indexes,
         }
     }
 
-    fn from_fragment(mut tokens: Vec<Token>, line_offset: usize) -> Self {
+    fn from_fragment(mut tokens: Vec<Token>, line_offset: usize, options: &ConvertOptions) -> Self {
         tokens.push(Token {
             kind: TokenKind::Eof,
             lexeme: String::new(),
@@ -211,6 +215,8 @@ impl Parser {
             pos: 0,
             diagnostics: Vec::new(),
             line_offset,
+            strict: options.strict,
+            ignore_unsupported_indexes: options.ignore_unsupported_indexes,
         }
     }
     fn parse_schema_into(&mut self, tables: &mut Vec<TableDef>, indexes: &mut Vec<IndexDef>) {
@@ -273,17 +279,17 @@ impl Parser {
         let mut filter = None;
         while !self.is_eof() && !self.consume_sym(';') {
             if self.consume_kw(Keyword::Include) {
-                self.unsupported(&format!(
+                self.unsupported_index(&format!(
                     "unsupported INCLUDE columns on index {index_name} were ignored"
                 ));
                 self.skip_balanced_parentheses();
             } else if self.consume_kw(Keyword::With) {
-                self.unsupported(&format!(
+                self.unsupported_index(&format!(
                     "unsupported WITH options on index {index_name} were ignored"
                 ));
                 self.skip_balanced_parentheses();
             } else if self.consume_kw(Keyword::On) {
-                self.unsupported(&format!(
+                self.unsupported_index(&format!(
                     "unsupported filegroup option on index {index_name} was ignored"
                 ));
                 self.skip_filegroup_option();
@@ -362,7 +368,12 @@ impl Parser {
         let mut foreign_keys = Vec::new();
         let mut check_constraints = Vec::new();
         for fragment in fragments {
-            let mut fragment_parser = Parser::from_fragment(fragment, self.line_offset);
+            let options = ConvertOptions {
+                strict: self.strict,
+                ignore_unsupported_indexes: self.ignore_unsupported_indexes,
+                ..ConvertOptions::default()
+            };
+            let mut fragment_parser = Parser::from_fragment(fragment, self.line_offset, &options);
             if fragment_parser.is_eof() {
                 continue;
             }
@@ -1009,7 +1020,7 @@ impl Parser {
 
     fn unsupported_table_fragment(&mut self, table: &TableName) {
         self.diagnostics.push(SchemaDiagnostic {
-            severity: DiagnosticSeverity::Unsupported,
+            severity: self.unsupported_constraint_severity(),
             message: format!(
                 "unsupported CREATE TABLE fragment in table {}",
                 table.display_sql_server()
@@ -1020,11 +1031,32 @@ impl Parser {
     }
     fn unsupported(&mut self, msg: &str) {
         self.diagnostics.push(SchemaDiagnostic {
-            severity: DiagnosticSeverity::Unsupported,
+            severity: self.unsupported_constraint_severity(),
             message: msg.into(),
             line: Some(self.peek().line + self.line_offset),
             column: Some(self.peek().column),
         });
+    }
+
+    fn unsupported_index(&mut self, msg: &str) {
+        self.diagnostics.push(SchemaDiagnostic {
+            severity: if self.ignore_unsupported_indexes {
+                DiagnosticSeverity::Warning
+            } else {
+                DiagnosticSeverity::Error
+            },
+            message: msg.into(),
+            line: Some(self.peek().line + self.line_offset),
+            column: Some(self.peek().column),
+        });
+    }
+
+    fn unsupported_constraint_severity(&self) -> DiagnosticSeverity {
+        if self.strict {
+            DiagnosticSeverity::Error
+        } else {
+            DiagnosticSeverity::Warning
+        }
     }
     fn error(&mut self, msg: &str) {
         self.diagnostics.push(SchemaDiagnostic {
@@ -1433,8 +1465,7 @@ mod tests {
         assert!(s
             .diagnostics
             .iter()
-            .any(|d| d.severity == DiagnosticSeverity::Unsupported
-                && d.message.contains("[dbo].[T]")));
+            .any(|d| d.severity == DiagnosticSeverity::Warning && d.message.contains("[dbo].[T]")));
     }
 
     #[test]
@@ -1581,7 +1612,7 @@ mod tests {
         assert!(s
             .diagnostics
             .iter()
-            .any(|d| d.severity == DiagnosticSeverity::Unsupported));
+            .any(|d| d.severity == DiagnosticSeverity::Warning));
     }
 
     #[test]

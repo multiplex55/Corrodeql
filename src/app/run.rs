@@ -84,6 +84,21 @@ fn run_convert_with_options(options: ConvertOptions) -> Result<()> {
 
     let schema = crate::mssql::normalize(parsed_schema);
     let generated = ddl::generate(&schema, &core_options)?;
+    if generated
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == schema_model::DiagnosticSeverity::Error)
+    {
+        write_convert_artifacts(
+            &options,
+            &schema,
+            &generated,
+            &core_options,
+            None,
+            report_validation_not_attempted("DDL generation errors prevented database creation"),
+        )?;
+        bail!("DDL generation errors prevented database creation");
+    }
 
     if options.dry_run {
         write_convert_artifacts(
@@ -419,6 +434,7 @@ fn core_convert_options(options: &ConvertOptions) -> core_options::ConvertOption
         allow_missing_csv: options.allow_missing_csv,
         allow_extra_csv_columns: options.allow_extra_csv_columns,
         skip_foreign_key_check: options.skip_foreign_key_check,
+        ignore_unsupported_indexes: options.ignore_unsupported_indexes,
         dry_run: options.dry_run,
     }
 }
@@ -977,6 +993,7 @@ mod tests {
             allow_missing_csv: false,
             allow_extra_csv_columns: false,
             skip_foreign_key_check: false,
+            ignore_unsupported_indexes: false,
             dry_run: true,
         })
         .unwrap();
@@ -1006,6 +1023,7 @@ mod tests {
             allow_missing_csv: false,
             allow_extra_csv_columns: false,
             skip_foreign_key_check: false,
+            ignore_unsupported_indexes: false,
             dry_run: true,
         };
         assert_eq!(resolved_report_dir(&options), explicit);
@@ -1036,6 +1054,7 @@ mod tests {
             allow_missing_csv: false,
             allow_extra_csv_columns: false,
             skip_foreign_key_check: false,
+            ignore_unsupported_indexes: false,
             dry_run: true,
         };
         let core_options = core_convert_options(&options);

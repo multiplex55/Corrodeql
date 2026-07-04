@@ -40,6 +40,7 @@ fn full_convert_arguments_parse() {
         "--allow-missing-csv",
         "--allow-extra-csv-columns",
         "--skip-foreign-key-check",
+        "--ignore-unsupported-indexes",
         "--dry-run",
     ])
     .expect("full convert args should parse");
@@ -60,6 +61,7 @@ fn full_convert_arguments_parse() {
     assert!(args.allow_missing_csv);
     assert!(args.allow_extra_csv_columns);
     assert!(args.skip_foreign_key_check);
+    assert!(args.ignore_unsupported_indexes);
     assert!(args.dry_run);
 }
 
@@ -83,4 +85,35 @@ fn convert_can_parse_without_paths_for_interactive_prompting() {
     assert!(args.schema.is_none());
     assert!(args.data_dir.is_none());
     assert!(args.out.is_none());
+}
+
+#[test]
+fn convert_permissive_flags_parse_and_default_to_false() {
+    let cli = Cli::try_parse_from([
+        "corrodeql",
+        "convert",
+        "--allow-missing-csv",
+        "--allow-extra-csv-columns",
+        "--skip-foreign-key-check",
+        "--ignore-unsupported-indexes",
+    ])
+    .expect("permissive flags should parse");
+
+    let Some(Command::Convert(args)) = cli.command else {
+        panic!("expected convert command");
+    };
+    assert!(args.allow_missing_csv);
+    assert!(args.allow_extra_csv_columns);
+    assert!(args.skip_foreign_key_check);
+    assert!(args.ignore_unsupported_indexes);
+
+    let defaults = Cli::try_parse_from(["corrodeql", "convert"]).unwrap();
+    let Some(Command::Convert(default_args)) = defaults.command else {
+        panic!("expected convert command");
+    };
+    assert!(!default_args.strict);
+    assert!(!default_args.allow_missing_csv);
+    assert!(!default_args.allow_extra_csv_columns);
+    assert!(!default_args.skip_foreign_key_check);
+    assert!(!default_args.ignore_unsupported_indexes);
 }

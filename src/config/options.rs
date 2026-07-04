@@ -21,6 +21,7 @@ pub struct ConvertOptions {
     pub allow_missing_csv: bool,
     pub allow_extra_csv_columns: bool,
     pub skip_foreign_key_check: bool,
+    pub ignore_unsupported_indexes: bool,
     pub dry_run: bool,
 }
 
@@ -43,6 +44,7 @@ impl Default for ConvertOptions {
             allow_missing_csv: false,
             allow_extra_csv_columns: false,
             skip_foreign_key_check: false,
+            ignore_unsupported_indexes: false,
             dry_run: false,
         }
     }
