@@ -17,6 +17,18 @@ fn convert_help_is_available() {
 }
 
 #[test]
+fn inspect_schema_argument_parses() {
+    let cli = Cli::try_parse_from(["corrodeql", "inspect-schema", "--schema", "schema.sql"])
+        .expect("inspect-schema --schema should parse");
+
+    let Some(Command::InspectSchema(args)) = cli.command else {
+        panic!("expected inspect-schema command");
+    };
+
+    assert_eq!(args.schema, Some(PathBuf::from("schema.sql")));
+}
+
+#[test]
 fn init_example_out_argument_parses() {
     let cli = Cli::try_parse_from(["corrodeql", "init-example", "--out", "sample-export"])
         .expect("init-example --out should parse");
