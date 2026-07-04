@@ -1,4 +1,4 @@
-use super::model::{ConversionReport, DiagnosticSeverity};
+use super::model::{ConversionReport, Diagnostic, DiagnosticSeverity};
 use crate::sqlite::names::quote_identifier;
 
 /// Renders a human-readable conversion report.
@@ -117,10 +117,7 @@ pub fn render(report: &ConversionReport) -> String {
         report.row_count_validation.status
     ));
     for diagnostic in &report.row_count_validation.diagnostics {
-        output.push_str(&format!(
-            "- {:?}: {}\n",
-            diagnostic.severity, diagnostic.message
-        ));
+        output.push_str(&format!("- {}\n", render_diagnostic(diagnostic)));
     }
 
     output.push_str("\nForeign-key validation\n");
@@ -148,10 +145,7 @@ pub fn render(report: &ConversionReport) -> String {
         .iter()
         .chain(report.default_mapping_warnings.iter())
     {
-        output.push_str(&format!(
-            "- {:?}: {}\n",
-            diagnostic.severity, diagnostic.message
-        ));
+        output.push_str(&format!("- {}\n", render_diagnostic(diagnostic)));
     }
 
     output.push_str("\nSkipped objects\n");
@@ -175,12 +169,7 @@ pub fn render(report: &ConversionReport) -> String {
     if !report.diagnostics.is_empty() {
         output.push_str("\nDiagnostics\n");
         for diagnostic in &report.diagnostics {
-            let label = match diagnostic.severity {
-                DiagnosticSeverity::Warning => "warning",
-                DiagnosticSeverity::Error => "error",
-                DiagnosticSeverity::Unsupported => "unsupported",
-            };
-            output.push_str(&format!("- {label}: {}\n", diagnostic.message));
+            output.push_str(&format!("- {}\n", render_diagnostic(diagnostic)));
         }
     }
 
@@ -215,13 +204,42 @@ pub fn render(report: &ConversionReport) -> String {
         ));
     }
     for diagnostic in &report.validation.diagnostics {
-        output.push_str(&format!(
-            "- {:?}: {}\n",
-            diagnostic.severity, diagnostic.message
-        ));
+        output.push_str(&format!("- {}\n", render_diagnostic(diagnostic)));
     }
 
     output
+}
+
+fn render_diagnostic(diagnostic: &Diagnostic) -> String {
+    let label = match diagnostic.severity {
+        DiagnosticSeverity::Warning => "warning",
+        DiagnosticSeverity::Error => "error",
+        DiagnosticSeverity::Unsupported => "unsupported",
+    };
+    render_diagnostic_with_label(diagnostic, label)
+}
+
+fn render_diagnostic_with_label(diagnostic: &Diagnostic, label: &str) -> String {
+    let mut text = format!("{label}");
+    if let Some(category) = diagnostic.category {
+        text.push_str(&format!(" [{category:?}]"));
+    }
+    if let Some(object) = &diagnostic.schema_object {
+        text.push_str(&format!(" ({object})"));
+    }
+    if let Some(path) = &diagnostic.file_path {
+        text.push_str(&format!(" at {path}"));
+        if let Some(line) = diagnostic.line_number {
+            text.push_str(&format!(":{line}"));
+        }
+    } else if let Some(line) = diagnostic.line_number {
+        text.push_str(&format!(" at line {line}"));
+    }
+    text.push_str(&format!(": {}", diagnostic.message));
+    if let Some(suggestion) = &diagnostic.suggestion {
+        text.push_str(&format!(" Suggestion: {suggestion}"));
+    }
+    text
 }
 
 #[cfg(test)]
@@ -264,6 +282,7 @@ mod tests {
             diagnostics: vec![Diagnostic {
                 severity: DiagnosticSeverity::Warning,
                 message: "default was ignored".to_owned(),
+                ..Default::default()
             }],
             ..ConversionReport::default()
         };
