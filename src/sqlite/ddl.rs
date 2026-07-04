@@ -714,6 +714,24 @@ mod tests {
     }
 
     #[test]
+    fn table_name_ddl_quotes_generated_table_name() {
+        let schema = DatabaseSchema {
+            tables: vec![table(
+                "sales ops",
+                "Order \"Archive\"",
+                vec![col("Id", SqlServerType::Int, false)],
+            )],
+            indexes: vec![],
+            diagnostics: vec![],
+            statement_summary: Default::default(),
+        };
+
+        assert!(ddl(schema).statements[0]
+            .0
+            .starts_with("CREATE TABLE \"sales ops_Order \"\"Archive\"\"\""));
+    }
+
+    #[test]
     fn table_naming_modes() {
         let schema = DatabaseSchema {
             tables: vec![table(
