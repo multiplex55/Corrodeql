@@ -267,7 +267,7 @@ fn foreign_key_names(table: &schema_model::TableDef) -> String {
     }
 }
 
-/// Placeholder implementation for `corrodeql emit-ddl`.
+/// Emits SQLite DDL converted from an MSSQL schema file.
 pub fn run_emit_ddl(args: EmitDdlArgs) -> Result<()> {
     validate_schema_path(args.schema.as_deref())?;
     validate_output_parent(args.out.as_deref())?;
@@ -275,16 +275,26 @@ pub fn run_emit_ddl(args: EmitDdlArgs) -> Result<()> {
         .schema
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("schema file path is required"))?;
+    let out = args
+        .out
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("output DDL file path is required"))?;
     let schema_text = fs::read_to_string(schema_path)
         .with_context(|| format!("failed to read schema file {}", schema_path.display()))?;
-    let schema = parser::parse(&schema_text);
-    let sql = ddl::schema_sql(&schema, &core_options::ConvertOptions::default())?;
-    if let Some(out) = args.out {
-        fs::write(&out, sql)
-            .with_context(|| format!("failed to write SQLite DDL to {}", out.display()))?;
-    } else {
-        print!("{sql}");
+    let core_options = core_options::ConvertOptions::default();
+    let parsed_schema = parser::parse_with_options(&schema_text, &core_options);
+    if parsed_schema
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == schema_model::DiagnosticSeverity::Error)
+    {
+        bail!("parse errors prevented DDL generation");
     }
+
+    let schema = crate::mssql::normalize(parsed_schema);
+    let sql = ddl::schema_sql(&schema, &core_options)?;
+    fs::write(out, sql)
+        .with_context(|| format!("failed to write SQLite DDL to {}", out.display()))?;
     Ok(())
 }
 

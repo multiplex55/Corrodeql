@@ -29,6 +29,26 @@ fn inspect_schema_argument_parses() {
 }
 
 #[test]
+fn emit_ddl_subcommand_arguments_parse() {
+    let cli = Cli::try_parse_from([
+        "corrodeql",
+        "emit-ddl",
+        "--schema",
+        "schema.sql",
+        "--out",
+        "converted_schema.sql",
+    ])
+    .expect("emit-ddl --schema --out should parse");
+
+    let Some(Command::EmitDdl(args)) = cli.command else {
+        panic!("expected emit-ddl command");
+    };
+
+    assert_eq!(args.schema, Some(PathBuf::from("schema.sql")));
+    assert_eq!(args.out, Some(PathBuf::from("converted_schema.sql")));
+}
+
+#[test]
 fn init_example_out_argument_parses() {
     let cli = Cli::try_parse_from(["corrodeql", "init-example", "--out", "sample-export"])
         .expect("init-example --out should parse");
