@@ -111,6 +111,7 @@ pub enum SqlServerType {
         scale: Option<u8>,
     },
     Money,
+    SmallMoney,
     Float {
         precision: Option<u8>,
     },
@@ -124,6 +125,9 @@ pub enum SqlServerType {
         scale: Option<u8>,
     },
     SmallDateTime,
+    DateTimeOffset {
+        scale: Option<u8>,
+    },
     UniqueIdentifier,
     Char {
         length: Option<u32>,
@@ -141,6 +145,7 @@ pub enum SqlServerType {
     },
     Text,
     NText,
+    Image,
     Binary {
         length: Option<u32>,
     },
@@ -148,6 +153,8 @@ pub enum SqlServerType {
         length: Option<u32>,
         max: bool,
     },
+    RowVersion,
+    Timestamp,
     Xml,
     Other {
         name: String,

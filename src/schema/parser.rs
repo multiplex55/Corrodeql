@@ -6,7 +6,7 @@ use crate::config::options::ConvertOptions;
 use crate::mssql::{
     defaults::normalize_default,
     identifiers::{object_name_from_identifiers, parse_identifier_token, Identifier},
-    types::normalize_type,
+    types::normalize_type_with_context,
 };
 
 /// Parses schema input into a schema model. Recoverable unsupported statements
@@ -47,7 +47,14 @@ fn parse_batches(batches: &[SqlBatch], options: &ConvertOptions) -> Schema {
     }
     for table in &tables {
         for column in &table.columns {
-            diagnostics.extend(normalize_type(&column.data_type).diagnostics);
+            diagnostics.extend(
+                normalize_type_with_context(
+                    &column.data_type,
+                    Some(&table.name),
+                    Some(&column.name),
+                )
+                .diagnostics,
+            );
             if let Some(default) = &column.default {
                 diagnostics.extend(normalize_default(&default.expression).diagnostics);
             }
@@ -682,13 +689,20 @@ impl Parser {
             TinyInt => SqlServerType::TinyInt,
             Bit => SqlServerType::Bit,
             Money => SqlServerType::Money,
+            SmallMoney => SqlServerType::SmallMoney,
             Real => SqlServerType::Real,
             Date => SqlServerType::Date,
             DateTime => SqlServerType::DateTime,
             SmallDateTime => SqlServerType::SmallDateTime,
+            DateTimeOffset => SqlServerType::DateTimeOffset {
+                scale: num8(args.first()),
+            },
             UniqueIdentifier => SqlServerType::UniqueIdentifier,
             Text => SqlServerType::Text,
             NText => SqlServerType::NText,
+            Image => SqlServerType::Image,
+            RowVersion => SqlServerType::RowVersion,
+            Timestamp => SqlServerType::Timestamp,
             Xml => SqlServerType::Xml,
             Decimal => SqlServerType::Decimal {
                 precision: num8(args.first()),
@@ -743,6 +757,7 @@ impl Parser {
             "TINYINT" => SqlServerType::TinyInt,
             "BIT" => SqlServerType::Bit,
             "MONEY" => SqlServerType::Money,
+            "SMALLMONEY" => SqlServerType::SmallMoney,
             "REAL" => SqlServerType::Real,
             "DATE" => SqlServerType::Date,
             "DATETIME" => SqlServerType::DateTime,
@@ -750,9 +765,15 @@ impl Parser {
                 scale: num8(args.first()),
             },
             "SMALLDATETIME" => SqlServerType::SmallDateTime,
+            "DATETIMEOFFSET" => SqlServerType::DateTimeOffset {
+                scale: num8(args.first()),
+            },
             "UNIQUEIDENTIFIER" => SqlServerType::UniqueIdentifier,
             "TEXT" => SqlServerType::Text,
             "NTEXT" => SqlServerType::NText,
+            "IMAGE" => SqlServerType::Image,
+            "ROWVERSION" => SqlServerType::RowVersion,
+            "TIMESTAMP" => SqlServerType::Timestamp,
             "XML" => SqlServerType::Xml,
             "DECIMAL" => SqlServerType::Decimal {
                 precision: num8(args.first()),
@@ -1418,7 +1439,7 @@ mod tests {
 
     #[test]
     fn parses_major_sql_server_type_families() {
-        let s = parse("CREATE TABLE T (A int, B bigint, C smallint, D tinyint, E bit, F decimal(10,2), G numeric(8,3), H money, I float, J real, K char(5), L varchar(20), M varchar(max), N nchar(4), O nvarchar(30), P nvarchar(max), Q text, R ntext, S date, U datetime, V datetime2, W smalldatetime, X time, Y uniqueidentifier, Z binary, AA varbinary, AB varbinary(max));");
+        let s = parse("CREATE TABLE T (A int, B bigint, C smallint, D tinyint, E bit, F decimal(10,2), G numeric(8,3), H money, H2 smallmoney, I float, J real, K char(5), L varchar(20), M varchar(max), N nchar(4), O nvarchar(30), P nvarchar(max), Q text, R ntext, S date, T datetimeoffset, U datetime, V datetime2, W smalldatetime, X time, Y uniqueidentifier, Z binary, AA varbinary, AB varbinary(max), AC image, AD rowversion, AE timestamp, AF xml);");
         let columns = &s.tables[0].columns;
         assert_eq!(columns[0].data_type, SqlServerType::Int);
         assert_eq!(
@@ -1428,31 +1449,40 @@ mod tests {
                 scale: Some(2)
             }
         );
+        assert_eq!(columns[8].data_type, SqlServerType::SmallMoney);
         assert_eq!(
-            columns[12].data_type,
+            columns[13].data_type,
             SqlServerType::VarChar {
                 length: None,
                 max: true
             }
         );
         assert_eq!(
-            columns[15].data_type,
+            columns[16].data_type,
             SqlServerType::NVarChar {
                 length: None,
                 max: true
             }
         );
         assert_eq!(
-            columns[24].data_type,
+            columns[26].data_type,
             SqlServerType::Binary { length: None }
         );
         assert_eq!(
-            columns[26].data_type,
+            columns[28].data_type,
             SqlServerType::VarBinary {
                 length: None,
                 max: true
             }
         );
+        assert_eq!(
+            columns[20].data_type,
+            SqlServerType::DateTimeOffset { scale: None }
+        );
+        assert_eq!(columns[29].data_type, SqlServerType::Image);
+        assert_eq!(columns[30].data_type, SqlServerType::RowVersion);
+        assert_eq!(columns[31].data_type, SqlServerType::Timestamp);
+        assert_eq!(columns[32].data_type, SqlServerType::Xml);
         assert!(s.diagnostics.iter().any(|d| d.message.contains("affinity")));
     }
 
