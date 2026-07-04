@@ -132,6 +132,18 @@ pub fn render(report: &ConversionReport) -> String {
             report.validation.integrity_check.results.join("; ")
         }
     ));
+    output.push_str(&format!(
+        "Foreign-key check: attempted={}, skipped={}, violations={}\n",
+        report.validation.foreign_key_check_attempted,
+        report.validation.foreign_key_check_skipped,
+        report.validation.foreign_key_violations.len()
+    ));
+    for violation in &report.validation.foreign_key_violations {
+        output.push_str(&format!(
+            "- foreign key violation: child_table={}, rowid={:?}, parent_table={}, foreign_key_id={}\n",
+            violation.child_table, violation.rowid, violation.parent_table, violation.foreign_key_id
+        ));
+    }
     for diagnostic in &report.validation.diagnostics {
         output.push_str(&format!(
             "- {:?}: {}\n",

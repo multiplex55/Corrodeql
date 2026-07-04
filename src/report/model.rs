@@ -96,9 +96,21 @@ pub struct ValidationReport {
     pub attempted: bool,
     pub success: bool,
     pub tables_validated: usize,
+    pub foreign_key_check_attempted: bool,
+    pub foreign_key_check_skipped: bool,
+    pub foreign_key_violations: Vec<ForeignKeyViolationReport>,
     pub row_count_validation: RowCountValidationReport,
     pub integrity_check: IntegrityCheckReport,
     pub diagnostics: Vec<Diagnostic>,
+}
+
+/// A row returned by SQLite `PRAGMA foreign_key_check` included in conversion reports.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ForeignKeyViolationReport {
+    pub child_table: String,
+    pub rowid: Option<i64>,
+    pub parent_table: String,
+    pub foreign_key_id: i64,
 }
 
 /// SQLite `PRAGMA integrity_check` results included in conversion reports.

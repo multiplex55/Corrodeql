@@ -332,6 +332,95 @@ fn related_child_rows_import_before_parent_and_validate_after_import() {
 }
 
 #[test]
+fn invalid_foreign_key_data_fails_conversion_by_default() {
+    let root = temp_root("invalid-fk-default");
+    let schema = root.join("schema.sql");
+    let data_dir = root.join("csv");
+    let db = root.join("out.sqlite");
+    let report_dir = root.join("reports");
+    fs::create_dir_all(&data_dir).unwrap();
+    fs::write(
+        &schema,
+        "CREATE TABLE [dbo].[Parent] (\n  [Id] int NOT NULL,\n  CONSTRAINT [PK_Parent] PRIMARY KEY ([Id])\n);\nCREATE TABLE [dbo].[Child] (\n  [Id] int NOT NULL,\n  [ParentId] int NOT NULL,\n  CONSTRAINT [PK_Child] PRIMARY KEY ([Id]),\n  CONSTRAINT [FK_Child_Parent] FOREIGN KEY ([ParentId]) REFERENCES [dbo].[Parent] ([Id])\n);\n",
+    )
+    .unwrap();
+    fs::write(data_dir.join("dbo.Parent.csv"), "Id\n1\n").unwrap();
+    fs::write(data_dir.join("dbo.Child.csv"), "Id,ParentId\n10,999\n").unwrap();
+
+    let result = run_with_args([
+        "corrodeql".into(),
+        "convert".into(),
+        "--schema".into(),
+        schema.into_os_string(),
+        "--data-dir".into(),
+        data_dir.into_os_string(),
+        "--out".into(),
+        db.into_os_string(),
+        "--report-dir".into(),
+        report_dir.clone().into_os_string(),
+    ]);
+
+    assert!(result.is_err());
+    let report: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(report_dir.join("conversion_report.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(report["validation"]["foreign_key_check_attempted"], true);
+    assert_eq!(report["validation"]["foreign_key_check_skipped"], false);
+    let violations = report["validation"]["foreign_key_violations"]
+        .as_array()
+        .unwrap();
+    assert_eq!(violations.len(), 1);
+    assert_eq!(violations[0]["child_table"], "dbo_Child");
+    assert_eq!(violations[0]["parent_table"], "dbo_Parent");
+    assert_eq!(violations[0]["foreign_key_id"], 0);
+}
+
+#[test]
+fn invalid_foreign_key_data_succeeds_when_check_skipped_and_report_says_skipped() {
+    let root = temp_root("invalid-fk-skipped");
+    let schema = root.join("schema.sql");
+    let data_dir = root.join("csv");
+    let db = root.join("out.sqlite");
+    let report_dir = root.join("reports");
+    fs::create_dir_all(&data_dir).unwrap();
+    fs::write(
+        &schema,
+        "CREATE TABLE [dbo].[Parent] (\n  [Id] int NOT NULL,\n  CONSTRAINT [PK_Parent] PRIMARY KEY ([Id])\n);\nCREATE TABLE [dbo].[Child] (\n  [Id] int NOT NULL,\n  [ParentId] int NOT NULL,\n  CONSTRAINT [PK_Child] PRIMARY KEY ([Id]),\n  CONSTRAINT [FK_Child_Parent] FOREIGN KEY ([ParentId]) REFERENCES [dbo].[Parent] ([Id])\n);\n",
+    )
+    .unwrap();
+    fs::write(data_dir.join("dbo.Parent.csv"), "Id\n1\n").unwrap();
+    fs::write(data_dir.join("dbo.Child.csv"), "Id,ParentId\n10,999\n").unwrap();
+
+    run_with_args([
+        "corrodeql".into(),
+        "convert".into(),
+        "--schema".into(),
+        schema.into_os_string(),
+        "--data-dir".into(),
+        data_dir.into_os_string(),
+        "--out".into(),
+        db.into_os_string(),
+        "--report-dir".into(),
+        report_dir.clone().into_os_string(),
+        "--skip-foreign-key-check".into(),
+    ])
+    .unwrap();
+
+    let report: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(report_dir.join("conversion_report.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(report["validation"]["success"], true);
+    assert_eq!(report["validation"]["foreign_key_check_attempted"], false);
+    assert_eq!(report["validation"]["foreign_key_check_skipped"], true);
+    assert!(report["validation"]["foreign_key_violations"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
 fn row_count_manifest_matching_counts_allows_conversion() {
     let root = temp_root("row-counts-ok");
     let (schema, data_dir) = write_fixture(&root);

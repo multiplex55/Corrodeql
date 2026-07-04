@@ -12,9 +12,9 @@ use crate::config::options as core_options;
 use crate::report::{
     json,
     model::{
-        ConversionReport, Diagnostic, DiagnosticSeverity, ImportReport, SchemaSummary,
-        StatementKindReport, StatementReport, TableImportReport, TableImportStatus, TableReport,
-        ValidationReport,
+        ConversionReport, Diagnostic, DiagnosticSeverity, ForeignKeyViolationReport, ImportReport,
+        SchemaSummary, StatementKindReport, StatementReport, TableImportReport, TableImportStatus,
+        TableReport, ValidationReport,
     },
     text,
 };
@@ -117,7 +117,7 @@ fn run_convert_with_options(options: ConvertOptions) -> Result<()> {
                 return Err(error.into());
             }
         };
-    database::enable_foreign_keys(&connection)
+    sqlite_validate::enable_foreign_keys_for_validation(&connection)
         .context("failed to enable SQLite foreign-key enforcement before validation")?;
     let validation = sqlite_validate::validate_database(&connection, &schema, &core_options)
         .context("failed to validate SQLite database after import")?;
@@ -202,6 +202,8 @@ pub fn run_validate(args: ValidateArgs) -> Result<()> {
         ..core_options::ConvertOptions::default()
     };
 
+    sqlite_validate::enable_foreign_keys_for_validation(&connection)
+        .context("failed to enable SQLite foreign-key enforcement before validation")?;
     let report = sqlite_validate::validate_database(&connection, &schema, &options)?;
     print_validation_report(&report);
     if !report.is_success() {
@@ -660,6 +662,9 @@ fn report_validation_not_attempted(message: &str) -> ValidationReport {
         attempted: false,
         success: false,
         tables_validated: 0,
+        foreign_key_check_attempted: false,
+        foreign_key_check_skipped: false,
+        foreign_key_violations: vec![],
         row_count_validation: Default::default(),
         integrity_check: Default::default(),
         diagnostics: vec![Diagnostic {
@@ -682,13 +687,32 @@ fn report_validation_from_sqlite(report: &sqlite_validate::ValidationReport) -> 
             });
         }
     }
-    for violation in &report.foreign_key_violations {
+    let foreign_key_violations = report
+        .foreign_key_violations
+        .iter()
+        .map(|violation| ForeignKeyViolationReport {
+            child_table: violation.table.clone(),
+            rowid: violation.rowid,
+            parent_table: violation.parent.clone(),
+            foreign_key_id: violation.fkid,
+        })
+        .collect::<Vec<_>>();
+    for violation in &foreign_key_violations {
         diagnostics.push(Diagnostic {
             severity: DiagnosticSeverity::Error,
             message: format!(
-                "foreign key violation in {} referencing {}",
-                violation.table, violation.parent
+                "foreign key violation in {} rowid {:?} referencing {} (foreign key id {})",
+                violation.child_table,
+                violation.rowid,
+                violation.parent_table,
+                violation.foreign_key_id
             ),
+        });
+    }
+    if report.foreign_key_check_skipped {
+        diagnostics.push(Diagnostic {
+            severity: DiagnosticSeverity::Warning,
+            message: "foreign-key validation skipped by option".to_owned(),
         });
     }
     for missing in &report.missing_indexes_or_constraints {
@@ -718,6 +742,9 @@ fn report_validation_from_sqlite(report: &sqlite_validate::ValidationReport) -> 
         attempted: true,
         success: report.is_success(),
         tables_validated: report.tables.len(),
+        foreign_key_check_attempted: report.foreign_key_check_attempted,
+        foreign_key_check_skipped: report.foreign_key_check_skipped,
+        foreign_key_violations,
         row_count_validation,
         integrity_check,
         diagnostics,
