@@ -65,7 +65,19 @@ pub fn import_database(
             continue;
         };
 
-        let table_report = import_table(&transaction, table, sqlite_name, path, options)?;
+        let table_report = match import_table(&transaction, table, sqlite_name, path, options) {
+            Ok(table_report) => table_report,
+            Err(failure) => {
+                report.rows_read += failure.report.rows_read;
+                report.rows_inserted += failure.report.rows_inserted;
+                report.rows_rejected += failure.report.rows_rejected;
+                report.tables.push(failure.report);
+                return Err(Error::ImportFailure {
+                    report,
+                    source: Box::new(failure.source),
+                });
+            }
+        };
         report.rows_read += table_report.rows_read;
         report.rows_inserted += table_report.rows_inserted;
         report.rows_rejected += table_report.rows_rejected;
@@ -86,20 +98,7 @@ fn import_table(
     sqlite_name: &Name,
     path: &Utf8PathBuf,
     options: &ConvertOptions,
-) -> Result<TableImportReport> {
-    let insert_sql = insert_statement(table, sqlite_name);
-    // Prepare the INSERT once and reuse it for each streamed CSV row; this keeps import memory
-    // usage independent of CSV length and avoids per-row statement compilation.
-    let mut statement = connection.prepare(&insert_sql)?;
-    let reader = CsvReader::from_path(
-        path,
-        table,
-        CsvReaderOptions {
-            null_token: options.null_token.clone(),
-            allow_extra_csv_columns: options.allow_extra_csv_columns,
-        },
-    )?;
-
+) -> std::result::Result<TableImportReport, ImportTableFailure> {
     let mut report = TableImportReport {
         source_table: table.name.display_sql_server(),
         sqlite_table: sqlite_name.0.clone(),
@@ -110,6 +109,21 @@ fn import_table(
         rows_rejected: 0,
         diagnostics: Vec::new(),
     };
+    let insert_sql = insert_statement(table, sqlite_name);
+    // Prepare the INSERT once and reuse it for each streamed CSV row; this keeps import memory
+    // usage independent of CSV length and avoids per-row statement compilation.
+    let mut statement = connection
+        .prepare(&insert_sql)
+        .map_err(|error| fail_table_report(&mut report, error.into()))?;
+    let reader = CsvReader::from_path(
+        path,
+        table,
+        CsvReaderOptions {
+            null_token: options.null_token.clone(),
+            allow_extra_csv_columns: options.allow_extra_csv_columns,
+        },
+    )
+    .map_err(|error| fail_table_report(&mut report, error))?;
 
     for row in reader {
         report.rows_read += 1;
@@ -117,23 +131,25 @@ fn import_table(
             Ok(row) => match statement.execute(params_from_iter(row.values)) {
                 Ok(_) => report.rows_inserted += 1,
                 Err(error) => {
-                    return Err(import_table_error(
+                    let source = import_table_error(
                         table,
                         sqlite_name,
                         path,
                         row.row_number,
                         error.to_string(),
-                    ));
+                    );
+                    return Err(fail_table_report(&mut report, source));
                 }
             },
             Err(error) if options.strict => {
-                return Err(import_table_error(
+                let source = import_table_error(
                     table,
                     sqlite_name,
                     path,
                     row_number_from_error(&error).unwrap_or(report.rows_read),
                     error.to_string(),
-                ));
+                );
+                return Err(fail_table_report(&mut report, source));
             }
             Err(error) => {
                 report.rows_rejected += 1;
@@ -144,6 +160,20 @@ fn import_table(
     }
 
     Ok(report)
+}
+
+struct ImportTableFailure {
+    report: TableImportReport,
+    source: Error,
+}
+
+fn fail_table_report(report: &mut TableImportReport, source: Error) -> ImportTableFailure {
+    report.status = TableImportStatus::Failed;
+    report.diagnostics.push(source.to_string());
+    ImportTableFailure {
+        report: report.clone(),
+        source,
+    }
 }
 
 fn insert_statement(table: &TableDef, sqlite_name: &Name) -> String {
@@ -553,5 +583,48 @@ mod tests {
         assert!(error.to_string().contains("missing required CSV column Id"));
         let tables: i64 = conn.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('dbo_Widget', 'dbo_Gadget')", [], |row| row.get(0)).unwrap();
         assert_eq!(tables, 0);
+    }
+
+    #[test]
+    fn fatal_import_error_returns_partial_report_for_completed_and_failed_tables() {
+        let dir = temp_dir("partial-report");
+        write_csv(&dir, "dbo.Widget.csv", "Id\n1\n2\n");
+        write_csv(&dir, "dbo.Gadget.csv", "Id\n10\nnot-int\n30\n");
+        let schema = schema(vec![
+            table("Widget", vec![column("Id", SqlServerType::Int, false)]),
+            table("Gadget", vec![column("Id", SqlServerType::Int, false)]),
+        ]);
+        let mut conn = Connection::open_in_memory().unwrap();
+        let mut opts = options(dir.clone());
+        opts.strict = true;
+
+        let error = import_database(&mut conn, &schema, &opts).unwrap_err();
+        let Error::ImportFailure { report, source } = error else {
+            panic!("expected ImportFailure");
+        };
+
+        assert!(source.to_string().contains("[dbo].[Gadget]"));
+        assert_eq!(report.tables.len(), 2);
+        assert_eq!(report.rows_read, 4);
+        assert_eq!(report.rows_inserted, 3);
+        assert_eq!(report.tables[0].source_table, "[dbo].[Widget]");
+        assert_eq!(report.tables[0].sqlite_table, "dbo_Widget");
+        assert_eq!(report.tables[0].status, TableImportStatus::Imported);
+        assert_eq!(report.tables[0].rows_read, 2);
+        assert_eq!(report.tables[0].rows_inserted, 2);
+
+        let failed = &report.tables[1];
+        assert_eq!(failed.source_table, "[dbo].[Gadget]");
+        assert_eq!(failed.sqlite_table, "dbo_Gadget");
+        assert_eq!(
+            failed.csv_path.as_deref(),
+            Some(dir.join("dbo.Gadget.csv").as_str())
+        );
+        assert_eq!(failed.status, TableImportStatus::Failed);
+        assert_eq!(failed.rows_read, 2);
+        assert_eq!(failed.rows_inserted, 1);
+        assert!(failed.diagnostics[0].contains("[dbo].[Gadget]"));
+        assert!(failed.diagnostics[0].contains("row 3"));
+        assert!(failed.diagnostics[0].contains("invalid value"));
     }
 }

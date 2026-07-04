@@ -107,12 +107,16 @@ fn run_convert_with_options(options: ConvertOptions) -> Result<()> {
         match sqlite_import::import_database(&mut connection, &schema, &core_options) {
             Ok(report) => report,
             Err(error) => {
+                let partial_import_report = match &error {
+                    crate::error::Error::ImportFailure { report, .. } => Some(report.clone()),
+                    _ => None,
+                };
                 write_convert_artifacts(
                     &options,
                     &schema,
                     &generated,
                     &core_options,
-                    None,
+                    partial_import_report,
                     report_validation_not_attempted(&format!("import failed: {error}")),
                 )?;
                 return Err(error.into());

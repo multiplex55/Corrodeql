@@ -2,6 +2,8 @@
 
 use camino::Utf8PathBuf;
 
+use crate::report::model::ImportReport;
+
 /// Crate-wide result type.
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -38,6 +40,11 @@ pub enum Error {
         column: String,
         row_number: u64,
         message: String,
+    },
+    #[error("CSV import failed after partial progress: {source}")]
+    ImportFailure {
+        report: ImportReport,
+        source: Box<Error>,
     },
     #[error("CSV import error for SQL Server table {source_table} into SQLite table {sqlite_table} from {csv_path}, row {row_number}: {message}")]
     ImportTable {

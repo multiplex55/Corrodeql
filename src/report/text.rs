@@ -84,11 +84,16 @@ pub fn render(report: &ConversionReport) -> String {
         report.import.rows_read, report.import.rows_inserted, report.import.rows_rejected
     ));
     for table in &report.import.tables {
+        let status = match table.status {
+            super::model::TableImportStatus::Imported => "Imported",
+            super::model::TableImportStatus::Partial => "Partial",
+            super::model::TableImportStatus::Failed => "Failed",
+            super::model::TableImportStatus::Skipped => "Skipped",
+        };
         output.push_str(&format!(
-            "- {} -> {}: {:?} (read={}, inserted={}, rejected={})\n",
+            "- {} -> {}: {status} (read={}, inserted={}, rejected={})\n",
             table.source_table,
             quote_identifier(&table.sqlite_table),
-            table.status,
             table.rows_read,
             table.rows_inserted,
             table.rows_rejected

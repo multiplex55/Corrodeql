@@ -96,6 +96,7 @@ pub struct TableImportReport {
 pub enum TableImportStatus {
     Imported,
     Partial,
+    Failed,
     Skipped,
 }
 
