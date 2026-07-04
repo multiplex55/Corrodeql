@@ -17,6 +17,30 @@ fn convert_help_is_available() {
 }
 
 #[test]
+fn init_example_out_argument_parses() {
+    let cli = Cli::try_parse_from(["corrodeql", "init-example", "--out", "sample-export"])
+        .expect("init-example --out should parse");
+
+    let Some(Command::InitExample(args)) = cli.command else {
+        panic!("expected init-example command");
+    };
+
+    assert_eq!(args.out, Some(PathBuf::from("sample-export")));
+}
+
+#[test]
+fn init_example_out_dir_alias_parses() {
+    let cli = Cli::try_parse_from(["corrodeql", "init-example", "--out-dir", "sample-export"])
+        .expect("init-example --out-dir alias should parse");
+
+    let Some(Command::InitExample(args)) = cli.command else {
+        panic!("expected init-example command");
+    };
+
+    assert_eq!(args.out, Some(PathBuf::from("sample-export")));
+}
+
+#[test]
 fn full_convert_arguments_parse() {
     let cli = Cli::try_parse_from([
         "corrodeql",

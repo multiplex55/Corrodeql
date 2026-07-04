@@ -94,7 +94,7 @@ fn init_example_creates_expected_files_in_temp_directory() {
     run_with_args([
         "corrodeql".into(),
         "init-example".into(),
-        "--out-dir".into(),
+        "--out".into(),
         root.clone().into_os_string(),
     ])
     .unwrap();
