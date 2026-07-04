@@ -1512,6 +1512,79 @@ mod tests {
     }
 
     #[test]
+    fn parses_requested_create_table_column_and_constraint_boundaries() {
+        let s = parse(
+            "CREATE TABLE [dbo].[Order] (
+                [Id] int IDENTITY(1,1) NOT NULL PRIMARY KEY,
+                [CustomerId] bigint NOT NULL,
+                [Name] nvarchar(100) NULL,
+                [Code] varchar(20) NOT NULL,
+                [Amount] decimal(18,2) NOT NULL DEFAULT ((0)),
+                [Price] money NULL,
+                [CreatedAt] datetime NOT NULL DEFAULT (GETDATE()),
+                [UpdatedAt] datetime2(7) NULL,
+                [IsActive] bit NOT NULL CONSTRAINT DF_Order_IsActive DEFAULT ((1)),
+                [ExternalId] uniqueidentifier NULL,
+                CONSTRAINT [PK_Order_Customer] PRIMARY KEY ([Id], [CustomerId]),
+                CONSTRAINT [UQ_Order_Code] UNIQUE ([Code]),
+                CONSTRAINT [FK_Order_Customer] FOREIGN KEY ([CustomerId]) REFERENCES [dbo].[Customer] ([Id]),
+                CONSTRAINT [CK_Order_Amount] CHECK ([Amount] >= 0),
+                INDEX IX_Unsupported ([Code])
+            );",
+        );
+
+        let table = &s.tables[0];
+        assert_eq!(table.name, TableName::new(Some("dbo".into()), "Order"));
+        assert!(table.columns[0].identity);
+        assert!(!table.columns[0].nullable);
+        assert!(table.columns[2].nullable);
+        assert_eq!(
+            table.columns[2].data_type,
+            SqlServerType::NVarChar {
+                length: Some(100),
+                max: false
+            }
+        );
+        assert_eq!(
+            table.columns[3].data_type,
+            SqlServerType::VarChar {
+                length: Some(20),
+                max: false
+            }
+        );
+        assert_eq!(table.columns[1].data_type, SqlServerType::BigInt);
+        assert_eq!(
+            table.columns[4].data_type,
+            SqlServerType::Decimal {
+                precision: Some(18),
+                scale: Some(2)
+            }
+        );
+        assert_eq!(table.columns[5].data_type, SqlServerType::Money);
+        assert_eq!(table.columns[6].data_type, SqlServerType::DateTime);
+        assert_eq!(
+            table.columns[7].data_type,
+            SqlServerType::DateTime2 { scale: Some(7) }
+        );
+        assert_eq!(table.columns[8].data_type, SqlServerType::Bit);
+        assert_eq!(table.columns[9].data_type, SqlServerType::UniqueIdentifier);
+        assert_eq!(
+            table.primary_key.as_ref().unwrap().columns,
+            vec!["Id", "CustomerId"]
+        );
+        assert_eq!(table.unique_constraints[0].columns, vec!["Code"]);
+        assert_eq!(
+            table.foreign_keys[0].referenced_table,
+            TableName::new(Some("dbo".into()), "Customer")
+        );
+        assert_eq!(table.check_constraints[0].expression, "Amount >= 0");
+        assert!(s
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == DiagnosticSeverity::Unsupported));
+    }
+
+    #[test]
     fn parses_named_unique_check_and_alter_foreign_key_constraints() {
         let s = parse("CREATE TABLE Parent (Id int, Code varchar(10), CONSTRAINT PK_Parent PRIMARY KEY (Id), CONSTRAINT UQ_Parent_Code UNIQUE (Code), CONSTRAINT CK_Parent_Id CHECK (Id > 0)); CREATE TABLE Child (Id int, ParentId int); ALTER TABLE Child ADD CONSTRAINT FK_Child_Parent FOREIGN KEY (ParentId) REFERENCES Parent (Id);");
         let parent = &s.tables[0];

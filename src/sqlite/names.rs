@@ -167,6 +167,38 @@ mod tests {
     }
 
     #[test]
+    fn covers_requested_sqlite_name_boundaries() {
+        assert_eq!(quote_identifier("Order"), "\"Order\"");
+        assert_eq!(quote_identifier("a\"b"), "\"a\"\"b\"");
+
+        let dbo = TableName::new(Some("dbo".to_owned()), "Order");
+        let sales = TableName::new(Some("sales".to_owned()), "Order");
+        assert_eq!(
+            table_name(&dbo, TableNameMode::SchemaPrefix),
+            Name("dbo_Order".to_owned())
+        );
+        assert_eq!(
+            table_name(&dbo, TableNameMode::DropDbo),
+            Name("Order".to_owned())
+        );
+        assert_eq!(
+            table_name(&sales, TableNameMode::DropDbo),
+            Name("sales_Order".to_owned())
+        );
+
+        let schema = DatabaseSchema {
+            tables: vec![table("dbo", "Order"), table("sales", "Order")],
+            indexes: Vec::new(),
+            diagnostics: Vec::new(),
+            statement_summary: Default::default(),
+        };
+        assert!(table_names_for_schema(&schema, TableNameMode::TableOnly)
+            .unwrap_err()
+            .to_string()
+            .contains("collision"));
+    }
+
+    #[test]
     fn detects_case_insensitive_sqlite_collision() {
         let schema = DatabaseSchema {
             tables: vec![table("dbo", "Customer"), table("dbo", "customer")],

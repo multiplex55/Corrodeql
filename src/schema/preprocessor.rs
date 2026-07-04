@@ -312,4 +312,25 @@ mod tests {
         assert_eq!(err[0].line, Some(2));
         assert!(err[0].message.contains("line context"));
     }
+
+    #[test]
+    fn reports_malformed_encoded_input_diagnostics() {
+        let utf8 = preprocess_bytes(&[0xFF]).unwrap_err();
+        assert!(utf8[0].message.contains("failed to decode UTF-8"));
+        assert_eq!(utf8[0].line, Some(1));
+
+        let utf16 = preprocess_bytes(&[0xFF, 0xFE, b'A']).unwrap_err();
+        assert!(utf16[0].message.contains("odd number of bytes"));
+        assert_eq!(utf16[0].column, Some(1));
+    }
+
+    #[test]
+    fn go_in_comments_is_ignored_and_line_context_is_preserved() {
+        let batches =
+            preprocess("CREATE TABLE A (Id int); -- GO\n/* GO */\nGO\nCREATE TABLE B (Id int);")
+                .unwrap();
+        assert_eq!(batches.len(), 2);
+        assert_eq!((batches[0].line_start, batches[0].line_end), (1, 2));
+        assert_eq!((batches[1].line_start, batches[1].line_end), (4, 4));
+    }
 }
