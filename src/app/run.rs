@@ -353,6 +353,13 @@ fn print_validation_report(report: &sqlite_validate::ValidationReport) {
     for missing in &report.missing_indexes_or_constraints {
         println!("missing index or constraint: {missing}");
     }
+    println!(
+        "row-count validation: {:?}",
+        report.row_count_validation.status
+    );
+    for diagnostic in &report.row_count_validation.diagnostics {
+        println!("row-count diagnostic: {:?}", diagnostic);
+    }
 }
 
 fn validate_output_parent(path: Option<&Path>) -> Result<()> {
@@ -648,6 +655,7 @@ fn report_validation_not_attempted(message: &str) -> ValidationReport {
         attempted: false,
         success: false,
         tables_validated: 0,
+        row_count_validation: Default::default(),
         diagnostics: vec![Diagnostic {
             severity: DiagnosticSeverity::Warning,
             message: message.to_owned(),
@@ -683,10 +691,63 @@ fn report_validation_from_sqlite(report: &sqlite_validate::ValidationReport) -> 
             message: missing.clone(),
         });
     }
+    let row_count_validation =
+        report_row_count_validation_from_sqlite(&report.row_count_validation);
+    diagnostics.extend(row_count_validation.diagnostics.clone());
     ValidationReport {
         attempted: true,
         success: report.is_success(),
         tables_validated: report.tables.len(),
+        row_count_validation,
+        diagnostics,
+    }
+}
+
+fn report_row_count_validation_from_sqlite(
+    report: &sqlite_validate::RowCountValidationReport,
+) -> crate::report::model::RowCountValidationReport {
+    let diagnostics = report
+        .diagnostics
+        .iter()
+        .map(|diagnostic| match diagnostic {
+            sqlite_validate::RowCountDiagnostic::ManifestMissing { path } => Diagnostic {
+                severity: DiagnosticSeverity::Warning,
+                message: format!(
+                    "row-count validation skipped because manifest is missing: {path}"
+                ),
+            },
+            sqlite_validate::RowCountDiagnostic::MissingTable { table } => Diagnostic {
+                severity: DiagnosticSeverity::Error,
+                message: format!("row-count manifest is missing expected table {table}"),
+            },
+            sqlite_validate::RowCountDiagnostic::UnknownTable { table } => Diagnostic {
+                severity: DiagnosticSeverity::Warning,
+                message: format!("row-count manifest contains unknown table {table}"),
+            },
+            sqlite_validate::RowCountDiagnostic::Mismatch {
+                table,
+                expected,
+                actual,
+            } => Diagnostic {
+                severity: DiagnosticSeverity::Error,
+                message: format!(
+                    "row-count mismatch for {table}: expected {expected}, actual {actual}"
+                ),
+            },
+        })
+        .collect();
+    crate::report::model::RowCountValidationReport {
+        status: match report.status {
+            sqlite_validate::RowCountValidationStatus::Skipped => {
+                crate::report::model::RowCountValidationStatus::Skipped
+            }
+            sqlite_validate::RowCountValidationStatus::Validated => {
+                crate::report::model::RowCountValidationStatus::Validated
+            }
+            sqlite_validate::RowCountValidationStatus::Failed => {
+                crate::report::model::RowCountValidationStatus::Failed
+            }
+        },
         diagnostics,
     }
 }

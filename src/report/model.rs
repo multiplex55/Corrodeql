@@ -96,7 +96,24 @@ pub struct ValidationReport {
     pub attempted: bool,
     pub success: bool,
     pub tables_validated: usize,
+    pub row_count_validation: RowCountValidationReport,
     pub diagnostics: Vec<Diagnostic>,
+}
+
+/// Optional row-count manifest validation status included in conversion reports.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RowCountValidationReport {
+    pub status: RowCountValidationStatus,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RowCountValidationStatus {
+    #[default]
+    Skipped,
+    Validated,
+    Failed,
 }
 
 /// A warning, error, or unsupported-feature note emitted during conversion.

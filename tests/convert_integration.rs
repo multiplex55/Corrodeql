@@ -176,6 +176,11 @@ fn invalid_csv_causes_validation_import_failure_without_sql_server() {
         include_str!("fixtures/bad_csv_data/dbo.Widget.csv"),
     )
     .unwrap();
+    fs::write(
+        data_dir.join("row_counts.csv"),
+        "schema_name,table_name,row_count\ndbo,Widget,1\n",
+    )
+    .unwrap();
 
     let result = run_with_args([
         "corrodeql".into(),
@@ -324,4 +329,52 @@ fn related_child_rows_import_before_parent_and_validate_after_import() {
     assert_eq!(child_rows, 1);
     assert_eq!(parent_rows, 1);
     assert_eq!(fk_violations, 0);
+}
+
+#[test]
+fn row_count_manifest_matching_counts_allows_conversion() {
+    let root = temp_root("row-counts-ok");
+    let (schema, data_dir) = write_fixture(&root);
+    fs::write(
+        data_dir.join("row_counts.csv"),
+        "schema_name,table_name,row_count\ndbo,Widget,1\n",
+    )
+    .unwrap();
+    let db = root.join("out.sqlite");
+
+    run_with_args([
+        "corrodeql".into(),
+        "convert".into(),
+        "--schema".into(),
+        schema.into_os_string(),
+        "--data-dir".into(),
+        data_dir.into_os_string(),
+        "--out".into(),
+        db.into_os_string(),
+    ])
+    .unwrap();
+}
+
+#[test]
+fn row_count_manifest_mismatch_fails_conversion() {
+    let root = temp_root("row-counts-bad");
+    let (schema, data_dir) = write_fixture(&root);
+    fs::write(
+        data_dir.join("row_counts.csv"),
+        "schema_name,table_name,row_count\ndbo,Widget,2\n",
+    )
+    .unwrap();
+
+    let result = run_with_args([
+        "corrodeql".into(),
+        "convert".into(),
+        "--schema".into(),
+        schema.into_os_string(),
+        "--data-dir".into(),
+        data_dir.into_os_string(),
+        "--out".into(),
+        root.join("out.sqlite").into_os_string(),
+    ]);
+
+    assert!(result.is_err());
 }

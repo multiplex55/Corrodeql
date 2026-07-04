@@ -5,9 +5,9 @@ use std::collections::{HashMap, HashSet};
 use rusqlite::Connection;
 
 use crate::config::options::ConvertOptions;
-use crate::data::manifest::{Manifest, ManifestOptions};
+use crate::data::row_counts::{read_row_count_manifest, ROW_COUNTS_FILE};
 use crate::error::{Error, Result};
-use crate::schema::model::{DatabaseSchema, TableDef};
+use crate::schema::model::{DatabaseSchema, TableDef, TableName};
 use crate::sqlite::names::{quote_identifier, table_names_for_schema};
 
 /// Backwards-compatible no-op marker for module-tree smoke tests.
@@ -19,6 +19,7 @@ pub struct ValidationReport {
     pub tables: Vec<TableValidationReport>,
     pub foreign_key_violations: Vec<ForeignKeyViolation>,
     pub missing_indexes_or_constraints: Vec<String>,
+    pub row_count_validation: RowCountValidationReport,
 }
 
 impl ValidationReport {
@@ -29,7 +30,47 @@ impl ValidationReport {
             .all(|table| table.status == TableValidationStatus::Valid)
             && self.foreign_key_violations.is_empty()
             && self.missing_indexes_or_constraints.is_empty()
+            && self.row_count_validation.is_success()
     }
+}
+
+/// Aggregate status for optional `row_counts.csv` validation.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RowCountValidationReport {
+    pub status: RowCountValidationStatus,
+    pub diagnostics: Vec<RowCountDiagnostic>,
+}
+
+impl RowCountValidationReport {
+    pub fn is_success(&self) -> bool {
+        !matches!(self.status, RowCountValidationStatus::Failed)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum RowCountValidationStatus {
+    #[default]
+    Skipped,
+    Validated,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RowCountDiagnostic {
+    ManifestMissing {
+        path: String,
+    },
+    MissingTable {
+        table: String,
+    },
+    UnknownTable {
+        table: String,
+    },
+    Mismatch {
+        table: String,
+        expected: u64,
+        actual: u64,
+    },
 }
 
 /// Per-table validation status and row-count details.
@@ -68,14 +109,7 @@ pub fn validate_database(
     options: &ConvertOptions,
 ) -> Result<ValidationReport> {
     let table_names = table_names_for_schema(schema, options.table_name_mode)?;
-    let manifest = Manifest::discover(
-        &options.data_dir,
-        schema,
-        ManifestOptions {
-            strict: false,
-            allow_missing_csv: true,
-        },
-    )?;
+    let row_count_manifest = read_row_count_manifest(&options.data_dir)?;
     let existing_tables = existing_tables(connection)?;
     let existing_indexes = existing_indexes(connection)?;
 
@@ -88,11 +122,9 @@ pub fn validate_database(
                 table.name.display_sql_server()
             ))
         })?;
-        let expected_row_count = manifest
-            .tables
-            .get(&table.name)
-            .map(count_csv_records)
-            .transpose()?;
+        let expected_row_count = row_count_manifest
+            .as_ref()
+            .and_then(|manifest| manifest.counts.get(&table.name).copied());
 
         if !existing_tables.contains(&sqlite_table.0) {
             report.tables.push(TableValidationReport {
@@ -141,11 +173,77 @@ pub fn validate_database(
         }
     }
 
+    report.row_count_validation =
+        validate_row_counts(schema, options, &row_count_manifest, &report.tables);
+
     if !options.skip_foreign_key_check {
         report.foreign_key_violations = foreign_key_violations(connection)?;
     }
 
     Ok(report)
+}
+
+fn validate_row_counts(
+    schema: &DatabaseSchema,
+    options: &ConvertOptions,
+    manifest: &Option<crate::data::row_counts::RowCountManifest>,
+    tables: &[TableValidationReport],
+) -> RowCountValidationReport {
+    let Some(manifest) = manifest else {
+        return RowCountValidationReport {
+            status: RowCountValidationStatus::Skipped,
+            diagnostics: vec![RowCountDiagnostic::ManifestMissing {
+                path: options.data_dir.join(ROW_COUNTS_FILE).to_string(),
+            }],
+        };
+    };
+
+    let expected_tables = schema
+        .tables()
+        .iter()
+        .map(|table| table.name.clone())
+        .collect::<HashSet<TableName>>();
+    let mut diagnostics = Vec::new();
+
+    for table in schema.tables() {
+        if !manifest.counts.contains_key(&table.name) {
+            diagnostics.push(RowCountDiagnostic::MissingTable {
+                table: table.name.display_sql_server(),
+            });
+        }
+    }
+    for table in manifest.counts.keys() {
+        if !expected_tables.contains(table) {
+            diagnostics.push(RowCountDiagnostic::UnknownTable {
+                table: table.display_sql_server(),
+            });
+        }
+    }
+    for table in tables {
+        if table.status == TableValidationStatus::RowCountMismatch {
+            diagnostics.push(RowCountDiagnostic::Mismatch {
+                table: table.source_table.clone(),
+                expected: table.expected_row_count.unwrap_or_default(),
+                actual: table.actual_row_count.unwrap_or_default(),
+            });
+        }
+    }
+
+    let status = if diagnostics.iter().any(|diagnostic| {
+        matches!(
+            diagnostic,
+            RowCountDiagnostic::MissingTable { .. } | RowCountDiagnostic::Mismatch { .. }
+        )
+    }) {
+        RowCountValidationStatus::Failed
+    } else {
+        RowCountValidationStatus::Validated
+    };
+
+    RowCountValidationReport {
+        status,
+        diagnostics,
+    }
 }
 
 fn existing_tables(connection: &Connection) -> Result<HashSet<String>> {
@@ -169,16 +267,6 @@ fn existing_indexes(connection: &Connection) -> Result<HashSet<String>> {
 fn table_row_count(connection: &Connection, table: &str) -> Result<u64> {
     let sql = format!("SELECT COUNT(*) FROM {}", quote_identifier(table));
     Ok(connection.query_row(&sql, [], |row| row.get::<_, i64>(0))? as u64)
-}
-
-fn count_csv_records(path: &camino::Utf8PathBuf) -> Result<u64> {
-    let mut reader = csv::Reader::from_path(path)?;
-    let mut count = 0;
-    for record in reader.records() {
-        record?;
-        count += 1;
-    }
-    Ok(count)
 }
 
 fn required_not_null_columns(table: &TableDef) -> Vec<String> {
@@ -298,6 +386,10 @@ mod tests {
         fs::write(dir.join(name), contents).unwrap();
     }
 
+    fn write_row_counts(dir: &Utf8PathBuf, contents: &str) {
+        fs::write(dir.join(ROW_COUNTS_FILE), contents).unwrap();
+    }
+
     fn parent_table() -> TableDef {
         let mut parent = table("Parent", vec![col("Id", false)]);
         parent.primary_key = Some(PrimaryKeyDef {
@@ -317,6 +409,7 @@ mod tests {
     fn successful_validation() {
         let dir = temp_dir("success");
         write_csv(&dir, "dbo.Widget.csv", "Id,ParentId\n1,1\n");
+        write_row_counts(&dir, "schema_name,table_name,row_count\ndbo,Widget,1\n");
         let schema = schema(
             vec![table(
                 "Widget",
@@ -347,6 +440,7 @@ mod tests {
     fn row_count_mismatch() {
         let dir = temp_dir("rows");
         write_csv(&dir, "dbo.Widget.csv", "Id\n1\n2\n");
+        write_row_counts(&dir, "schema_name,table_name,row_count\ndbo,Widget,2\n");
         let schema = schema(vec![table("Widget", vec![col("Id", false)])], vec![]);
         let connection = Connection::open_in_memory().unwrap();
         create_schema(&connection, &schema);
@@ -359,6 +453,55 @@ mod tests {
             report.tables[0].status,
             TableValidationStatus::RowCountMismatch
         );
+        assert!(!report.is_success());
+    }
+
+    #[test]
+    fn absent_row_counts_manifest_skips_row_count_validation() {
+        let dir = temp_dir("missing-row-counts");
+        write_csv(&dir, "dbo.Widget.csv", "Id\n1\n2\n");
+        let schema = schema(vec![table("Widget", vec![col("Id", false)])], vec![]);
+        let connection = Connection::open_in_memory().unwrap();
+        create_schema(&connection, &schema);
+        connection
+            .execute("INSERT INTO dbo_Widget (Id) VALUES (1)", [])
+            .unwrap();
+
+        let report = validate_database(&connection, &schema, &options(dir)).unwrap();
+        assert!(report.is_success());
+        assert_eq!(report.tables[0].expected_row_count, None);
+        assert_eq!(
+            report.row_count_validation.status,
+            RowCountValidationStatus::Skipped
+        );
+        assert!(matches!(
+            report.row_count_validation.diagnostics.as_slice(),
+            [RowCountDiagnostic::ManifestMissing { .. }]
+        ));
+    }
+
+    #[test]
+    fn row_count_manifest_missing_expected_table_is_reported() {
+        let dir = temp_dir("manifest-missing-table");
+        write_csv(&dir, "dbo.Widget.csv", "Id\n1\n");
+        write_row_counts(&dir, "schema_name,table_name,row_count\n");
+        let schema = schema(vec![table("Widget", vec![col("Id", false)])], vec![]);
+        let connection = Connection::open_in_memory().unwrap();
+        create_schema(&connection, &schema);
+        connection
+            .execute("INSERT INTO dbo_Widget (Id) VALUES (1)", [])
+            .unwrap();
+
+        let report = validate_database(&connection, &schema, &options(dir)).unwrap();
+        assert_eq!(
+            report.row_count_validation.status,
+            RowCountValidationStatus::Failed
+        );
+        assert!(report.row_count_validation.diagnostics.contains(
+            &RowCountDiagnostic::MissingTable {
+                table: "[dbo].[Widget]".to_owned()
+            }
+        ));
         assert!(!report.is_success());
     }
 
