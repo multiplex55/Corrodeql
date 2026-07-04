@@ -113,19 +113,32 @@ fn validate_headers(
     table: &TableDef,
     allow_extra_csv_columns: bool,
 ) -> Result<Vec<usize>> {
+    // Header matching is intentionally case-sensitive: CSV header text must exactly match
+    // the SQL Server schema column name.
     let mut expected_to_csv_index = Vec::with_capacity(table.columns.len());
     let mut used = vec![false; headers.len()];
 
     for column in &table.columns {
-        let index = headers.iter().position(|header| header == column.name);
-        match index {
-            Some(index) => {
-                expected_to_csv_index.push(index);
-                used[index] = true;
+        let indexes: Vec<usize> = headers
+            .iter()
+            .enumerate()
+            .filter_map(|(index, header)| (header == column.name).then_some(index))
+            .collect();
+        match indexes.as_slice() {
+            [index] => {
+                expected_to_csv_index.push(*index);
+                used[*index] = true;
             }
-            None => {
+            [] => {
                 return Err(validation_error(format!(
                     "missing required CSV column {} for table {}",
+                    column.name,
+                    table.name.display_sql_server()
+                )));
+            }
+            _ => {
+                return Err(validation_error(format!(
+                    "duplicate CSV column {} for table {}",
                     column.name,
                     table.name.display_sql_server()
                 )));
@@ -133,7 +146,22 @@ fn validate_headers(
         }
     }
 
+    let mut seen = std::collections::HashSet::new();
+    let mut duplicate_unknown = Vec::new();
+    for (index, header) in headers.iter().enumerate() {
+        if !used[index] && !seen.insert(header) && !duplicate_unknown.contains(&header) {
+            duplicate_unknown.push(header);
+        }
+    }
+
     if !allow_extra_csv_columns {
+        if !duplicate_unknown.is_empty() {
+            return Err(validation_error(format!(
+                "duplicate CSV column for table {}: {}",
+                table.name.display_sql_server(),
+                duplicate_unknown.join(", ")
+            )));
+        }
         let extras: Vec<&str> = headers
             .iter()
             .enumerate()
@@ -351,5 +379,40 @@ mod tests {
         assert!(message.contains("row 3"));
         assert!(message.contains("nope"));
         assert!(message.contains("expected integer"));
+    }
+    #[test]
+    fn header_matching_is_case_sensitive() {
+        let error = CsvReader::from_path(
+            &csv_path("case", "id\n1\n"),
+            &table(vec![col("Id", SqlServerType::Int)]),
+            Default::default(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("missing required CSV column Id"));
+        assert!(error.to_string().contains("[dbo].[Widget]"));
+    }
+
+    #[test]
+    fn rejects_duplicate_known_header() {
+        let error = CsvReader::from_path(
+            &csv_path("dup-known", "Id,Id\n1,2\n"),
+            &table(vec![col("Id", SqlServerType::Int)]),
+            Default::default(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("duplicate CSV column Id"));
+        assert!(error.to_string().contains("[dbo].[Widget]"));
+    }
+
+    #[test]
+    fn rejects_duplicate_unknown_header_in_strict_mode() {
+        let error = CsvReader::from_path(
+            &csv_path("dup-extra", "Id,Ignored,Ignored\n1,a,b\n"),
+            &table(vec![col("Id", SqlServerType::Int)]),
+            Default::default(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("duplicate CSV column"));
+        assert!(error.to_string().contains("Ignored"));
     }
 }

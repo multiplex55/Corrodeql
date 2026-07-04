@@ -190,3 +190,93 @@ fn invalid_csv_causes_validation_import_failure_without_sql_server() {
 
     assert!(result.is_err());
 }
+
+#[test]
+fn missing_csv_fails_by_default_and_allow_missing_creates_empty_table() {
+    let root = temp_root("missing-csv");
+    let schema = root.join("schema.sql");
+    let data_dir = root.join("csv");
+    fs::create_dir_all(&data_dir).unwrap();
+    fs::write(&schema, include_str!("fixtures/simple_schema.sql")).unwrap();
+
+    let fail = run_with_args([
+        "corrodeql".into(),
+        "convert".into(),
+        "--schema".into(),
+        schema.clone().into_os_string(),
+        "--data-dir".into(),
+        data_dir.clone().into_os_string(),
+        "--out".into(),
+        root.join("fail.sqlite").into_os_string(),
+    ]);
+    assert!(fail.is_err());
+
+    let db = root.join("ok.sqlite");
+    run_with_args([
+        "corrodeql".into(),
+        "convert".into(),
+        "--schema".into(),
+        schema.into_os_string(),
+        "--data-dir".into(),
+        data_dir.into_os_string(),
+        "--out".into(),
+        db.clone().into_os_string(),
+        "--allow-missing-csv".into(),
+    ])
+    .unwrap();
+    let connection = rusqlite::Connection::open(&db).unwrap();
+    let rows: i64 = connection
+        .query_row("SELECT COUNT(*) FROM dbo_Widget", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(rows, 0);
+}
+
+#[test]
+fn extra_csv_is_reported_as_strict_error() {
+    let root = temp_root("extra-csv");
+    let (schema, data_dir) = write_fixture(&root);
+    fs::write(data_dir.join("dbo.Extra.csv"), "Id\n1\n").unwrap();
+    let result = run_with_args([
+        "corrodeql".into(),
+        "convert".into(),
+        "--schema".into(),
+        schema.into_os_string(),
+        "--data-dir".into(),
+        data_dir.into_os_string(),
+        "--out".into(),
+        root.join("out.sqlite").into_os_string(),
+    ]);
+    assert!(result.unwrap_err().to_string().contains("extra CSV file"));
+}
+
+#[test]
+fn allow_extra_csv_columns_ignores_extra_values() {
+    let root = temp_root("extra-columns");
+    let schema = root.join("schema.sql");
+    let data_dir = root.join("csv");
+    let db = root.join("out.sqlite");
+    fs::create_dir_all(&data_dir).unwrap();
+    fs::write(&schema, include_str!("fixtures/simple_schema.sql")).unwrap();
+    fs::write(
+        data_dir.join("dbo.Widget.csv"),
+        "Id,Name,Ignored\n1,Gear,x\n",
+    )
+    .unwrap();
+    run_with_args([
+        "corrodeql".into(),
+        "convert".into(),
+        "--schema".into(),
+        schema.into_os_string(),
+        "--data-dir".into(),
+        data_dir.into_os_string(),
+        "--out".into(),
+        db.clone().into_os_string(),
+        "--allow-extra-csv-columns".into(),
+    ])
+    .unwrap();
+    let connection = rusqlite::Connection::open(&db).unwrap();
+    let name: String = connection
+        .query_row("SELECT Name FROM dbo_Widget", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(name, "Gear");
+}

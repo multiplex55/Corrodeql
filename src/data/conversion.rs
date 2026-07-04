@@ -89,8 +89,22 @@ fn parse_bit(value: &str) -> Result<Value, String> {
 }
 
 fn parse_numeric_text(value: &str) -> Result<Value, String> {
-    if value.parse::<f64>().is_ok() {
-        // Preserve decimal/numeric precision by storing the original textual representation.
+    // Preserve decimal/numeric/money precision by storing the original textual representation.
+    // Validate only a simple SQL-style decimal lexical grammar instead of parsing through f64.
+    let rest = value
+        .strip_prefix('+')
+        .or_else(|| value.strip_prefix('-'))
+        .unwrap_or(value);
+    let Some((left, right)) = rest.split_once('.').or(Some((rest, ""))) else {
+        unreachable!();
+    };
+    let has_digits =
+        left.bytes().any(|b| b.is_ascii_digit()) || right.bytes().any(|b| b.is_ascii_digit());
+    let valid = has_digits
+        && left.bytes().all(|b| b.is_ascii_digit())
+        && right.bytes().all(|b| b.is_ascii_digit())
+        && rest.matches('.').count() <= 1;
+    if valid {
         Ok(Value::Text(value.to_owned()))
     } else {
         Err("expected decimal or numeric value".to_owned())
@@ -209,5 +223,128 @@ mod tests {
         assert_eq!(error.row_number, 7);
         assert_eq!(error.original_value, "oops");
         assert_eq!(error.reason, "expected integer");
+    }
+    #[test]
+    fn blank_string_is_not_implicitly_null_for_text() {
+        let value =
+            convert_csv_value(&table(), &column("Name", SqlServerType::Text), 2, "", None).unwrap();
+        assert_eq!(value, Value::Text(String::new()));
+    }
+
+    #[test]
+    fn invalid_integer_and_bit_fail() {
+        assert!(
+            convert_csv_value(&table(), &column("Id", SqlServerType::BigInt), 2, "x", None)
+                .is_err()
+        );
+        assert!(convert_csv_value(
+            &table(),
+            &column("Flag", SqlServerType::Bit),
+            2,
+            "yes",
+            None
+        )
+        .is_err());
+        assert_eq!(
+            convert_csv_value(
+                &table(),
+                &column("Flag", SqlServerType::Bit),
+                2,
+                "FALSE",
+                None
+            )
+            .unwrap(),
+            Value::Integer(0)
+        );
+    }
+
+    #[test]
+    fn high_precision_decimal_and_money_are_preserved_as_text() {
+        let decimal = "12345678901234567890.123400";
+        assert_eq!(
+            convert_csv_value(
+                &table(),
+                &column(
+                    "Amount",
+                    SqlServerType::Numeric {
+                        precision: Some(38),
+                        scale: Some(6)
+                    }
+                ),
+                2,
+                decimal,
+                None
+            )
+            .unwrap(),
+            Value::Text(decimal.to_owned())
+        );
+        assert_eq!(
+            convert_csv_value(
+                &table(),
+                &column("Money", SqlServerType::Money),
+                2,
+                "123.4500",
+                None
+            )
+            .unwrap(),
+            Value::Text("123.4500".to_owned())
+        );
+    }
+
+    #[test]
+    fn float_date_guid_and_rowversion_behaviors() {
+        assert_eq!(
+            convert_csv_value(&table(), &column("F", SqlServerType::Real), 2, "1.5", None).unwrap(),
+            Value::Real(1.5)
+        );
+        assert!(convert_csv_value(
+            &table(),
+            &column("F", SqlServerType::Float { precision: None }),
+            2,
+            "nan?",
+            None
+        )
+        .is_err());
+        assert_eq!(
+            convert_csv_value(
+                &table(),
+                &column("D", SqlServerType::DateTime2 { scale: None }),
+                2,
+                "2024-01-02T03:04:05",
+                None
+            )
+            .unwrap(),
+            Value::Text("2024-01-02T03:04:05".to_owned())
+        );
+        assert_eq!(
+            convert_csv_value(
+                &table(),
+                &column("G", SqlServerType::UniqueIdentifier),
+                2,
+                "00000000-0000-0000-0000-000000000000",
+                None
+            )
+            .unwrap(),
+            Value::Text("00000000-0000-0000-0000-000000000000".to_owned())
+        );
+        assert_eq!(
+            convert_csv_value(
+                &table(),
+                &column("Rv", SqlServerType::RowVersion),
+                2,
+                "0x0102",
+                None
+            )
+            .unwrap(),
+            Value::Blob(vec![1, 2])
+        );
+        assert!(convert_csv_value(
+            &table(),
+            &column("Rv", SqlServerType::Timestamp),
+            2,
+            "base64==",
+            None
+        )
+        .is_err());
     }
 }
