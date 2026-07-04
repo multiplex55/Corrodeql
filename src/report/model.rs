@@ -164,10 +164,20 @@ pub enum RowCountValidationStatus {
 }
 
 /// A warning, error, or unsupported-feature note emitted during conversion.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Diagnostic {
     pub severity: DiagnosticSeverity,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub category: Option<DiagnosticCategory>,
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub schema_object: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub file_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub line_number: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub suggestion: Option<String>,
 }
 
 /// Severity for report diagnostics.
@@ -177,4 +187,25 @@ pub enum DiagnosticSeverity {
     Warning,
     Error,
     Unsupported,
+}
+
+impl Default for DiagnosticSeverity {
+    fn default() -> Self {
+        Self::Warning
+    }
+}
+
+/// Machine-readable categories for diagnostics emitted by conversion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum DiagnosticCategory {
+    UnsupportedStatement,
+    UnsupportedType,
+    UnsupportedDefault,
+    UnsupportedConstraint,
+    UnsupportedIndex,
+    CsvMissingColumn,
+    CsvExtraColumn,
+    CsvValueConversion,
+    ForeignKeyViolation,
+    RowCountMismatch,
 }

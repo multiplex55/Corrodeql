@@ -34,6 +34,7 @@ mod tests {
             diagnostics: vec![Diagnostic {
                 severity: DiagnosticSeverity::Unsupported,
                 message: "filegroup ignored".to_owned(),
+                ..Default::default()
             }],
             row_count_validation: RowCountValidationReport::default(),
             foreign_key_validation: ForeignKeyValidationReport {
@@ -55,10 +56,12 @@ mod tests {
             type_mapping_warnings: vec![Diagnostic {
                 severity: DiagnosticSeverity::Warning,
                 message: "unrecognized SQL Server type x".to_owned(),
+                ..Default::default()
             }],
             default_mapping_warnings: vec![Diagnostic {
                 severity: DiagnosticSeverity::Warning,
                 message: "default on [dbo].[A].C was not emitted".to_owned(),
+                ..Default::default()
             }],
             skipped_objects: vec!["1 trigger statement".to_owned()],
             unsupported_sql_server_features: vec!["filegroup ignored".to_owned()],

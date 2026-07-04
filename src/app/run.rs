@@ -12,7 +12,7 @@ use crate::config::options as core_options;
 use crate::report::{
     json,
     model::{
-        ConversionReport, CsvIssueReport, Diagnostic, DiagnosticSeverity,
+        ConversionReport, CsvIssueReport, Diagnostic, DiagnosticCategory, DiagnosticSeverity,
         ForeignKeyValidationReport, ForeignKeyViolationReport, ImportReport, SchemaSummary,
         StatementKindReport, StatementReport, TableImportReport, TableImportStatus, TableReport,
         ValidationReport,
@@ -566,13 +566,11 @@ fn build_conversion_report(
     let mut diagnostics = schema
         .diagnostics
         .iter()
-        .map(|diagnostic| Diagnostic {
-            severity: report_severity(&diagnostic.severity),
-            message: diagnostic.message.clone(),
+        .map(|diagnostic| {
+            report_diagnostic_from_schema(diagnostic, Some(options.schema.display().to_string()))
         })
-        .chain(generated.diagnostics.iter().map(|diagnostic| Diagnostic {
-            severity: report_severity(&diagnostic.severity),
-            message: diagnostic.message.clone(),
+        .chain(generated.diagnostics.iter().map(|diagnostic| {
+            report_diagnostic_from_schema(diagnostic, Some(options.schema.display().to_string()))
         }))
         .collect::<Vec<_>>();
     diagnostics.sort_by(|left, right| {
@@ -614,6 +612,13 @@ fn build_conversion_report(
         import_report.unwrap_or_else(|| skipped_import_report(schema, &table_names)),
     );
     let csv_issues = csv_issues_from_import_report(&import);
+    diagnostics.extend(import_diagnostics(&import));
+    diagnostics.sort_by(|left, right| {
+        left.severity
+            .cmp(&right.severity)
+            .then_with(|| left.category.cmp(&right.category))
+            .then_with(|| left.message.cmp(&right.message))
+    });
     let validation = sorted_validation_report(validation);
 
     Ok(ConversionReport {
@@ -646,6 +651,108 @@ fn build_conversion_report(
         unsupported_sql_server_features,
         csv_issues,
     })
+}
+
+fn plain_diagnostic(severity: DiagnosticSeverity, message: String) -> Diagnostic {
+    Diagnostic {
+        severity,
+        category: None,
+        message,
+        schema_object: None,
+        file_path: None,
+        line_number: None,
+        suggestion: None,
+    }
+}
+
+fn diagnostic_category(message: &str, severity: DiagnosticSeverity) -> Option<DiagnosticCategory> {
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("index") {
+        Some(DiagnosticCategory::UnsupportedIndex)
+    } else if lower.contains("constraint") || lower.contains("not trusted") {
+        Some(DiagnosticCategory::UnsupportedConstraint)
+    } else if is_default_mapping_warning(message) {
+        Some(DiagnosticCategory::UnsupportedDefault)
+    } else if is_type_mapping_warning(message) || lower.contains("affinity") {
+        Some(DiagnosticCategory::UnsupportedType)
+    } else if matches!(severity, DiagnosticSeverity::Unsupported)
+        || lower.contains("unsupported")
+        || lower.contains("unknown statement")
+    {
+        Some(DiagnosticCategory::UnsupportedStatement)
+    } else {
+        None
+    }
+}
+
+fn suggestion_for_category(category: Option<DiagnosticCategory>) -> Option<String> {
+    match category {
+        Some(DiagnosticCategory::UnsupportedType) => Some("Change the schema export to use a supported SQL Server type or review the generated SQLite affinity.".to_owned()),
+        Some(DiagnosticCategory::UnsupportedDefault) => Some("Change the schema export to use a SQLite-compatible default or remove the default before conversion.".to_owned()),
+        Some(DiagnosticCategory::UnsupportedConstraint) => Some("Change the schema export to use supported constraints or enable the explicit permissive option when available.".to_owned()),
+        Some(DiagnosticCategory::UnsupportedIndex) => Some("Change the schema export to use supported indexes or use --ignore-unsupported-indexes to report them as warnings.".to_owned()),
+        Some(DiagnosticCategory::CsvMissingColumn) => Some("Add the missing CSV column or regenerate the CSV with headers matching the schema.".to_owned()),
+        Some(DiagnosticCategory::CsvExtraColumn) => Some("Remove the extra CSV column or use --allow-extra-csv-columns.".to_owned()),
+        Some(DiagnosticCategory::CsvValueConversion) => Some("Correct the CSV value so it can be converted to the target column type.".to_owned()),
+        Some(DiagnosticCategory::ForeignKeyViolation) => Some("Fix child rows so their foreign-key values reference existing parent rows.".to_owned()),
+        Some(DiagnosticCategory::RowCountMismatch) => Some("Reconcile row_counts.csv with the imported rows; update expected counts or fix missing/extra data.".to_owned()),
+        Some(DiagnosticCategory::UnsupportedStatement) => Some("Change the schema export to omit unsupported statements or enable the explicit permissive option when available.".to_owned()),
+        None => None,
+    }
+}
+
+fn report_diagnostic_from_schema(
+    diagnostic: &schema_model::SchemaDiagnostic,
+    file_path: Option<String>,
+) -> Diagnostic {
+    let severity = report_severity(&diagnostic.severity);
+    let category = diagnostic_category(&diagnostic.message, severity);
+    Diagnostic {
+        severity,
+        category,
+        message: diagnostic.message.clone(),
+        schema_object: None,
+        file_path,
+        line_number: diagnostic.line,
+        suggestion: suggestion_for_category(category),
+    }
+}
+
+fn import_diagnostics(report: &ImportReport) -> Vec<Diagnostic> {
+    report
+        .tables
+        .iter()
+        .flat_map(|table| {
+            table.diagnostics.iter().map(move |message| {
+                let category = if message.contains("CSV file was not provided") {
+                    Some(DiagnosticCategory::CsvMissingColumn)
+                } else if message.contains("extra") || message.contains("unexpected") {
+                    Some(DiagnosticCategory::CsvExtraColumn)
+                } else if message.contains("invalid value") {
+                    Some(DiagnosticCategory::CsvValueConversion)
+                } else {
+                    None
+                };
+                Diagnostic {
+                    severity: if matches!(table.status, TableImportStatus::Failed) {
+                        DiagnosticSeverity::Error
+                    } else {
+                        DiagnosticSeverity::Warning
+                    },
+                    category,
+                    message: message.clone(),
+                    schema_object: Some(table.source_table.clone()),
+                    file_path: table.csv_path.clone(),
+                    line_number: None,
+                    suggestion: if message.contains("CSV file was not provided") {
+                        Some("Add the expected CSV file or use --allow-missing-csv.".to_owned())
+                    } else {
+                        suggestion_for_category(category)
+                    },
+                }
+            })
+        })
+        .collect()
 }
 
 fn is_type_mapping_warning(message: &str) -> bool {
@@ -760,10 +867,10 @@ fn report_validation_not_attempted(message: &str) -> ValidationReport {
         foreign_key_violations: vec![],
         row_count_validation: Default::default(),
         integrity_check: Default::default(),
-        diagnostics: vec![Diagnostic {
-            severity: DiagnosticSeverity::Warning,
-            message: message.to_owned(),
-        }],
+        diagnostics: vec![plain_diagnostic(
+            DiagnosticSeverity::Warning,
+            message.to_owned(),
+        )],
     }
 }
 
@@ -771,12 +878,23 @@ fn report_validation_from_sqlite(report: &sqlite_validate::ValidationReport) -> 
     let mut diagnostics = Vec::new();
     for table in &report.tables {
         if table.status != sqlite_validate::TableValidationStatus::Valid {
+            let category =
+                if table.status == sqlite_validate::TableValidationStatus::RowCountMismatch {
+                    Some(DiagnosticCategory::RowCountMismatch)
+                } else {
+                    None
+                };
             diagnostics.push(Diagnostic {
                 severity: DiagnosticSeverity::Error,
+                category,
                 message: format!(
                     "validation failed for {}: {:?}",
                     table.source_table, table.status
                 ),
+                schema_object: Some(table.source_table.clone()),
+                file_path: None,
+                line_number: None,
+                suggestion: suggestion_for_category(category),
             });
         }
     }
@@ -791,8 +909,10 @@ fn report_validation_from_sqlite(report: &sqlite_validate::ValidationReport) -> 
         })
         .collect::<Vec<_>>();
     for violation in &foreign_key_violations {
+        let category = Some(DiagnosticCategory::ForeignKeyViolation);
         diagnostics.push(Diagnostic {
             severity: DiagnosticSeverity::Error,
+            category,
             message: format!(
                 "foreign key violation in {} rowid {:?} referencing {} (foreign key id {})",
                 violation.child_table,
@@ -800,28 +920,32 @@ fn report_validation_from_sqlite(report: &sqlite_validate::ValidationReport) -> 
                 violation.parent_table,
                 violation.foreign_key_id
             ),
+            schema_object: Some(violation.child_table.clone()),
+            file_path: None,
+            line_number: None,
+            suggestion: suggestion_for_category(category),
         });
     }
     if report.foreign_key_check_skipped {
-        diagnostics.push(Diagnostic {
-            severity: DiagnosticSeverity::Warning,
-            message: "foreign-key validation skipped by option".to_owned(),
-        });
+        diagnostics.push(plain_diagnostic(
+            DiagnosticSeverity::Warning,
+            "foreign-key validation skipped by option".to_owned(),
+        ));
     }
     for missing in &report.missing_indexes_or_constraints {
-        diagnostics.push(Diagnostic {
-            severity: DiagnosticSeverity::Warning,
-            message: missing.clone(),
-        });
+        diagnostics.push(plain_diagnostic(
+            DiagnosticSeverity::Warning,
+            missing.clone(),
+        ));
     }
     let row_count_validation =
         report_row_count_validation_from_sqlite(&report.row_count_validation);
     diagnostics.extend(row_count_validation.diagnostics.clone());
     let integrity_check = report_integrity_check_from_sqlite(&report.integrity_check);
     if !integrity_check.success {
-        diagnostics.push(Diagnostic {
-            severity: DiagnosticSeverity::Error,
-            message: format!(
+        diagnostics.push(plain_diagnostic(
+            DiagnosticSeverity::Error,
+            format!(
                 "SQLite integrity_check failed: {}",
                 if integrity_check.results.is_empty() {
                     "<no rows>".to_owned()
@@ -829,7 +953,7 @@ fn report_validation_from_sqlite(report: &sqlite_validate::ValidationReport) -> 
                     integrity_check.results.join("; ")
                 }
             ),
-        });
+        ));
     }
     ValidationReport {
         attempted: true,
@@ -862,17 +986,32 @@ fn report_row_count_validation_from_sqlite(
         .map(|diagnostic| match diagnostic {
             sqlite_validate::RowCountDiagnostic::ManifestMissing { path } => Diagnostic {
                 severity: DiagnosticSeverity::Warning,
+                category: None,
                 message: format!(
                     "row-count validation skipped because manifest is missing: {path}"
                 ),
+                schema_object: None,
+                file_path: Some(path.clone()),
+                line_number: None,
+                suggestion: None,
             },
             sqlite_validate::RowCountDiagnostic::MissingTable { table } => Diagnostic {
                 severity: DiagnosticSeverity::Error,
+                category: Some(DiagnosticCategory::RowCountMismatch),
                 message: format!("row-count manifest is missing expected table {table}"),
+                schema_object: Some(table.clone()),
+                file_path: None,
+                line_number: None,
+                suggestion: suggestion_for_category(Some(DiagnosticCategory::RowCountMismatch)),
             },
             sqlite_validate::RowCountDiagnostic::UnknownTable { table } => Diagnostic {
                 severity: DiagnosticSeverity::Warning,
+                category: None,
                 message: format!("row-count manifest contains unknown table {table}"),
+                schema_object: Some(table.clone()),
+                file_path: None,
+                line_number: None,
+                suggestion: None,
             },
             sqlite_validate::RowCountDiagnostic::Mismatch {
                 table,
@@ -880,9 +1019,14 @@ fn report_row_count_validation_from_sqlite(
                 actual,
             } => Diagnostic {
                 severity: DiagnosticSeverity::Error,
+                category: Some(DiagnosticCategory::RowCountMismatch),
                 message: format!(
                     "row-count mismatch for {table}: expected {expected}, actual {actual}"
                 ),
+                schema_object: Some(table.clone()),
+                file_path: None,
+                line_number: None,
+                suggestion: suggestion_for_category(Some(DiagnosticCategory::RowCountMismatch)),
             },
         })
         .collect();

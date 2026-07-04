@@ -269,6 +269,22 @@ fn import_failure_after_ddl_generation_still_writes_reports() {
         .as_str()
         .unwrap()
         .contains("import failed"));
+    assert!(report["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|diagnostic| {
+            diagnostic["category"] == "CsvValueConversion"
+                && diagnostic["schema_object"] == "[dbo].[Widget]"
+                && diagnostic["file_path"]
+                    .as_str()
+                    .unwrap()
+                    .ends_with("dbo.Widget.csv")
+                && diagnostic["suggestion"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Correct the CSV value")
+        }));
 }
 
 #[test]
@@ -518,6 +534,18 @@ fn invalid_foreign_key_data_fails_conversion_by_default() {
     assert_eq!(violations[0]["child_table"], "dbo_Child");
     assert_eq!(violations[0]["parent_table"], "dbo_Parent");
     assert_eq!(violations[0]["foreign_key_id"], 0);
+    assert!(report["validation"]["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|diagnostic| {
+            diagnostic["category"] == "ForeignKeyViolation"
+                && diagnostic["message"].as_str().unwrap().contains("rowid")
+                && diagnostic["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("dbo_Parent")
+        }));
 }
 
 #[test]
@@ -598,6 +626,7 @@ fn row_count_manifest_mismatch_fails_conversion() {
     )
     .unwrap();
 
+    let report_dir = root.join("reports");
     let result = run_with_args([
         "corrodeql".into(),
         "convert".into(),
@@ -607,9 +636,30 @@ fn row_count_manifest_mismatch_fails_conversion() {
         data_dir.into_os_string(),
         "--out".into(),
         root.join("out.sqlite").into_os_string(),
+        "--report-dir".into(),
+        report_dir.clone().into_os_string(),
     ]);
 
     assert!(result.is_err());
+    let report: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(report_dir.join("conversion_report.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(report["row_count_validation"]["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|diagnostic| {
+            diagnostic["category"] == "RowCountMismatch"
+                && diagnostic["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("expected 2, actual 1")
+                && diagnostic["suggestion"]
+                    .as_str()
+                    .unwrap()
+                    .contains("row_counts.csv")
+        }));
 }
 
 #[test]
@@ -687,5 +737,10 @@ fn unsupported_index_fails_by_default_and_is_reported_when_ignored() {
             .unwrap()
             .contains("unsupported INCLUDE columns on index IX_Widget_Name")
             && diagnostic["severity"] == "warning"
+            && diagnostic["category"] == "UnsupportedIndex"
+            && diagnostic["suggestion"]
+                .as_str()
+                .unwrap()
+                .contains("--ignore-unsupported-indexes")
     }));
 }
