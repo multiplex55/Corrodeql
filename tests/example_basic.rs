@@ -4,6 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use corrodeql::app::run::run_with_args;
 use corrodeql::data::csv_reader::{CsvReader, CsvReaderOptions};
+use corrodeql::data::row_counts::read_row_count_manifest;
 use corrodeql::schema::{model::DiagnosticSeverity, parser};
 
 fn temp_root(name: &str) -> PathBuf {
@@ -33,16 +34,20 @@ fn basic_example_schema_parses_successfully() {
         "unexpected parse diagnostics: {:?}",
         schema.diagnostics
     );
-    assert_eq!(schema.tables.len(), 3);
-    assert_eq!(schema.indexes.len(), 1);
-    assert!(schema.tables.iter().any(|table| table
+    assert_eq!(schema.tables.len(), 2);
+    assert_eq!(schema.indexes.len(), 0);
+    assert!(schema.tables.iter().all(|table| table
         .primary_key
         .as_ref()
-        .is_some_and(|pk| pk.columns.len() == 2)));
+        .is_some_and(|pk| pk.columns.len() == 1)));
     assert!(schema
         .tables
         .iter()
-        .any(|table| !table.unique_constraints.is_empty()));
+        .any(|table| table.name.table == "Customer"));
+    assert!(schema
+        .tables
+        .iter()
+        .any(|table| table.name.table == "Order"));
     assert!(schema
         .tables
         .iter()
@@ -67,6 +72,22 @@ fn basic_example_csv_headers_match_schema() {
 }
 
 #[test]
+fn basic_example_row_counts_manifest_can_be_read() {
+    let manifest = read_row_count_manifest("examples/basic")
+        .unwrap()
+        .expect("examples/basic/row_counts.csv should exist");
+
+    assert_eq!(manifest.counts.len(), 2);
+    for table in example_schema().tables() {
+        assert!(
+            manifest.counts.contains_key(&table.name),
+            "missing row count for {}",
+            table.name.display_sql_server()
+        );
+    }
+}
+
+#[test]
 fn init_example_creates_expected_files_in_temp_directory() {
     let root = temp_root("init");
 
@@ -82,7 +103,8 @@ fn init_example_creates_expected_files_in_temp_directory() {
         "schema.sql",
         "data/dbo.Customer.csv",
         "data/dbo.Order.csv",
-        "data/dbo.OrderLine.csv",
+        "row_counts.csv",
+        "README.md",
     ] {
         assert!(root.join(relative).exists(), "missing {relative}");
     }

@@ -1,0 +1,5 @@
+schema_name,table_name,row_count
+dbo,Customer,2
+dbo,Order,2
+dbo,OrderLine,3
+sales,Invoice,2
