@@ -111,6 +111,46 @@ fn init_example_creates_expected_files_in_temp_directory() {
 }
 
 #[test]
+fn init_example_converts_and_validates_successfully() {
+    let root = temp_root("init-convert");
+    let db_path = root.join("generated.sqlite");
+
+    run_with_args([
+        "corrodeql".into(),
+        "init-example".into(),
+        "--out-dir".into(),
+        root.clone().into_os_string(),
+    ])
+    .unwrap();
+
+    run_with_args([
+        "corrodeql".into(),
+        "convert".into(),
+        "--schema".into(),
+        root.join("schema.sql").into_os_string(),
+        "--data-dir".into(),
+        root.join("data").into_os_string(),
+        "--out".into(),
+        db_path.clone().into_os_string(),
+    ])
+    .unwrap();
+
+    assert!(db_path.exists(), "missing generated SQLite database");
+
+    run_with_args([
+        "corrodeql".into(),
+        "validate".into(),
+        "--schema".into(),
+        root.join("schema.sql").into_os_string(),
+        "--data-dir".into(),
+        root.join("data").into_os_string(),
+        "--db".into(),
+        db_path.into_os_string(),
+    ])
+    .unwrap();
+}
+
+#[test]
 fn init_example_refuses_to_overwrite_existing_files() {
     let root = temp_root("overwrite");
     fs::create_dir_all(root.join("data")).unwrap();
