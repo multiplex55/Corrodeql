@@ -8,6 +8,14 @@ use crate::schema::model::{DatabaseSchema, TableName};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Name(pub String);
 
+/// Quotes a SQLite identifier using double quotes.
+///
+/// SQLite accepts double-quoted identifiers for tables, columns, indexes,
+/// and constraints. Embedded double quotes are escaped by doubling them.
+pub fn quote_identifier(identifier: &str) -> String {
+    format!("\"{}\"", identifier.replace('"', "\"\""))
+}
+
 /// Generates the SQLite table name for a SQL Server table name and naming mode.
 pub fn table_name(table_name: &TableName, mode: TableNameMode) -> Name {
     let name = match mode {
@@ -33,7 +41,8 @@ pub fn table_names_for_schema(
 
     for table in schema.tables() {
         let sqlite_name = table_name(&table.name, mode);
-        if let Some(existing) = generated_to_source.get(&sqlite_name.0) {
+        let collision_key = sqlite_name.0.to_lowercase();
+        if let Some(existing) = generated_to_source.get(&collision_key) {
             return Err(Error::Validation {
                 message: format!(
                     "SQLite table name collision under table-name-mode '{}': {} and {} both generate '{}'",
@@ -45,7 +54,7 @@ pub fn table_names_for_schema(
             });
         }
 
-        generated_to_source.insert(sqlite_name.0.clone(), table.name.clone());
+        generated_to_source.insert(collision_key, table.name.clone());
         generated.insert(table.name.clone(), sqlite_name);
     }
 
@@ -73,6 +82,21 @@ mod tests {
             foreign_keys: Vec::new(),
             check_constraints: Vec::new(),
         }
+    }
+
+    #[test]
+    fn quotes_normal_identifier() {
+        assert_eq!(quote_identifier("CustomerId"), "\"CustomerId\"");
+    }
+
+    #[test]
+    fn quotes_reserved_word_identifier() {
+        assert_eq!(quote_identifier("Order"), "\"Order\"");
+    }
+
+    #[test]
+    fn quotes_identifier_with_embedded_double_quote() {
+        assert_eq!(quote_identifier("a\"b"), "\"a\"\"b\"");
     }
 
     #[test]
@@ -140,5 +164,19 @@ mod tests {
         assert!(names
             .values()
             .any(|name| name == &Name("sales_Customer".to_owned())));
+    }
+
+    #[test]
+    fn detects_case_insensitive_sqlite_collision() {
+        let schema = DatabaseSchema {
+            tables: vec![table("dbo", "Customer"), table("dbo", "customer")],
+            indexes: Vec::new(),
+            diagnostics: Vec::new(),
+            statement_summary: Default::default(),
+        };
+
+        let error = table_names_for_schema(&schema, TableNameMode::SchemaPrefix).unwrap_err();
+        assert!(error.to_string().contains("collision"));
+        assert!(error.to_string().contains("dbo_customer"));
     }
 }

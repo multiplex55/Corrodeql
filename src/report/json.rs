@@ -36,6 +36,8 @@ mod tests {
 
         let json = render(&report);
         assert!(json.contains("\"input_schema_path\": \"schema.sql\""));
+        assert!(json.contains("\"source_table\": \"[dbo].[A]\""));
+        assert!(json.contains("\"sqlite_table\": \"dbo_A\""));
         assert!(json.contains("\"severity\": \"unsupported\""));
         assert!(serde_json::from_str::<ConversionReport>(&json).is_ok());
     }

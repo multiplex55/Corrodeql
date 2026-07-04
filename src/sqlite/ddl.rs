@@ -6,7 +6,7 @@ use crate::schema::model::{
     CheckConstraintDef, DatabaseSchema, DiagnosticSeverity, ForeignKeyDef, IndexDef,
     ReferentialAction, SchemaDiagnostic, SqlServerType, TableDef, TableName, UniqueConstraintDef,
 };
-use crate::sqlite::names::{table_names_for_schema, Name};
+use crate::sqlite::names::{quote_identifier, table_names_for_schema, Name};
 use crate::sqlite::types::sqlite_affinity;
 
 /// A SQLite DDL statement.
@@ -81,11 +81,6 @@ impl GeneratedDdl {
         sql.push('\n');
         sql
     }
-}
-
-/// Quotes a SQLite identifier using double quotes.
-pub fn quote_identifier(identifier: &str) -> String {
-    format!("\"{}\"", identifier.replace('"', "\"\""))
 }
 
 fn create_table_statement(

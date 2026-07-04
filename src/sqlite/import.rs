@@ -9,8 +9,8 @@ use crate::data::manifest::{Manifest, ManifestOptions};
 use crate::error::{Error, Result};
 use crate::report::model::{ImportReport, TableImportReport, TableImportStatus};
 use crate::schema::model::{DatabaseSchema, TableDef};
-use crate::sqlite::ddl::{self, quote_identifier};
-use crate::sqlite::names::{table_names_for_schema, Name};
+use crate::sqlite::ddl;
+use crate::sqlite::names::{quote_identifier, table_names_for_schema, Name};
 
 /// Backwards-compatible no-op marker for module-tree smoke tests.
 pub fn import() {}

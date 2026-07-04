@@ -8,8 +8,7 @@ use crate::config::options::ConvertOptions;
 use crate::data::manifest::{Manifest, ManifestOptions};
 use crate::error::{Error, Result};
 use crate::schema::model::{DatabaseSchema, TableDef};
-use crate::sqlite::ddl::quote_identifier;
-use crate::sqlite::names::table_names_for_schema;
+use crate::sqlite::names::{quote_identifier, table_names_for_schema};
 
 /// Backwards-compatible no-op marker for module-tree smoke tests.
 pub fn validate() {}
