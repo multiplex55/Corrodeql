@@ -39,6 +39,14 @@ pub enum Error {
         row_number: u64,
         message: String,
     },
+    #[error("CSV import error for SQL Server table {source_table} into SQLite table {sqlite_table} from {csv_path}, row {row_number}: {message}")]
+    ImportTable {
+        source_table: String,
+        sqlite_table: String,
+        csv_path: String,
+        row_number: u64,
+        message: String,
+    },
     #[error("SQLite DDL/database error: {message}")]
     SqliteDdlDatabase { message: String },
     #[error("validation error: {message}")]
@@ -100,5 +108,22 @@ mod tests {
         assert!(display.contains("[dbo].[Widget]"));
         assert!(display.contains("Quantity"));
         assert!(display.contains("42"));
+    }
+
+    #[test]
+    fn import_table_error_includes_context() {
+        let error = Error::ImportTable {
+            source_table: "[dbo].[Widget]".to_owned(),
+            sqlite_table: "dbo_Widget".to_owned(),
+            csv_path: "/tmp/dbo.Widget.csv".to_owned(),
+            row_number: 7,
+            message: "constraint failed".to_owned(),
+        };
+        let display = error.to_string();
+        assert!(display.contains("[dbo].[Widget]"));
+        assert!(display.contains("dbo_Widget"));
+        assert!(display.contains("/tmp/dbo.Widget.csv"));
+        assert!(display.contains("7"));
+        assert!(display.contains("constraint failed"));
     }
 }
