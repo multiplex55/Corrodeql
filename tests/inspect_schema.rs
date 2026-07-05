@@ -4,14 +4,28 @@ use std::process::Command;
 use corrodeql::app::run::run_with_args;
 
 #[test]
-fn inspect_schema_basic_example_succeeds_with_run_with_args() {
-    run_with_args([
-        OsString::from("corrodeql"),
-        OsString::from("inspect-schema"),
-        OsString::from("--schema"),
-        OsString::from("examples/basic/schema.sql"),
-    ])
-    .expect("inspect-schema should parse the basic example schema");
+fn inspect_schema_basic_example_succeeds_and_prints_summary() {
+    let output = Command::new(env!("CARGO_BIN_EXE_corrodeql"))
+        .args([
+            "inspect-schema",
+            "--schema",
+            "examples/basic/schema.sql",
+        ])
+        .output()
+        .expect("failed to run corrodeql inspect-schema");
+
+    assert!(
+        output.status.success(),
+        "inspect-schema failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Tables:"), "stdout was: {stdout}");
+    assert!(stdout.contains("dbo.Customer"), "stdout was: {stdout}");
+    assert!(stdout.contains("columns:"), "stdout was: {stdout}");
+    assert!(stdout.contains("primary key:"), "stdout was: {stdout}");
 }
 
 #[test]
