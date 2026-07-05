@@ -200,7 +200,7 @@ pub fn validate_database(
         report.foreign_key_check_skipped = true;
     } else {
         report.foreign_key_check_attempted = true;
-        report.foreign_key_violations = foreign_key_violations(connection)?;
+        report.foreign_key_violations = run_foreign_key_check(connection)?;
     }
 
     Ok(report)
@@ -339,7 +339,8 @@ fn missing_required_not_null_columns(
         .collect())
 }
 
-fn foreign_key_violations(connection: &Connection) -> Result<Vec<ForeignKeyViolation>> {
+/// Runs SQLite foreign-key validation and returns any reported violations.
+pub fn run_foreign_key_check(connection: &Connection) -> Result<Vec<ForeignKeyViolation>> {
     let mut statement = connection.prepare("PRAGMA foreign_key_check")?;
     let rows = statement.query_map([], |row| {
         Ok(ForeignKeyViolation {

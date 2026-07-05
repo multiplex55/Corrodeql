@@ -173,3 +173,17 @@ fn convert_permissive_flags_parse_and_default_to_false() {
     assert!(!default_args.skip_foreign_key_check);
     assert!(!default_args.ignore_unsupported_indexes);
 }
+
+#[test]
+fn validate_database_only_arguments_parse() {
+    let cli = Cli::try_parse_from(["corrodeql", "validate", "--db", "output.sqlite"])
+        .expect("validate --db should parse without schema or data directory");
+
+    let Some(Command::Validate(args)) = cli.command else {
+        panic!("expected validate command");
+    };
+
+    assert_eq!(args.db, Some(PathBuf::from("output.sqlite")));
+    assert!(args.schema.is_none());
+    assert!(args.data_dir.is_none());
+}
