@@ -298,46 +298,73 @@ pub fn run_emit_ddl(args: EmitDdlArgs) -> Result<()> {
     Ok(())
 }
 
-/// Validates an existing SQLite database against schema and CSV inputs.
+/// Validates an existing SQLite database against schema and CSV inputs, or runs database-only checks.
 pub fn run_validate(args: ValidateArgs) -> Result<()> {
     validate_schema_path(args.schema.as_deref())?;
     validate_data_dir(args.data_dir.as_deref())?;
     validate_sqlite_db_path(args.db.as_deref())?;
 
-    let schema_path = args
-        .schema
-        .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("schema file path is required"))?;
-    let data_dir = args
-        .data_dir
-        .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("data directory path is required"))?;
     let db_path = args
         .db
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("SQLite database path is required; pass --db"))?;
 
-    let schema_text = fs::read_to_string(schema_path)
-        .with_context(|| format!("failed to read schema file {}", schema_path.display()))?;
-    let schema = parser::parse(&schema_text);
+    match (args.schema.as_deref(), args.data_dir.as_deref()) {
+        (Some(schema_path), Some(data_dir)) => {
+            let schema_text = fs::read_to_string(schema_path)
+                .with_context(|| format!("failed to read schema file {}", schema_path.display()))?;
+            let schema = parser::parse(&schema_text);
+            let connection = rusqlite::Connection::open(db_path)
+                .with_context(|| format!("failed to open SQLite database {}", db_path.display()))?;
+            let options = core_options::ConvertOptions {
+                schema_path: camino::Utf8PathBuf::from_path_buf(schema_path.to_path_buf())
+                    .unwrap_or_default(),
+                data_dir: camino::Utf8PathBuf::from_path_buf(data_dir.to_path_buf())
+                    .unwrap_or_default(),
+                output_db_path: camino::Utf8PathBuf::from_path_buf(db_path.to_path_buf())
+                    .unwrap_or_default(),
+                table_name_mode: args.table_name_mode.unwrap_or_default(),
+                skip_foreign_key_check: args.skip_foreign_key_check,
+                ..core_options::ConvertOptions::default()
+            };
+
+            sqlite_validate::enable_foreign_keys_for_validation(&connection)
+                .context("failed to enable SQLite foreign-key enforcement before validation")?;
+            let report = sqlite_validate::validate_database(&connection, &schema, &options)?;
+            print_validation_report(&report);
+            if !report.is_success() {
+                bail!("validation failed");
+            }
+        }
+        (None, None) => run_validate_database_only(db_path, args.skip_foreign_key_check)?,
+        (Some(_), None) => bail!("data directory path is required when --schema is provided"),
+        (None, Some(_)) => bail!("schema file path is required when --data-dir is provided"),
+    }
+
+    Ok(())
+}
+
+fn run_validate_database_only(db_path: &Path, skip_foreign_key_check: bool) -> Result<()> {
     let connection = rusqlite::Connection::open(db_path)
         .with_context(|| format!("failed to open SQLite database {}", db_path.display()))?;
-    let options = core_options::ConvertOptions {
-        schema_path: camino::Utf8PathBuf::from_path_buf(schema_path.to_path_buf())
-            .unwrap_or_default(),
-        data_dir: camino::Utf8PathBuf::from_path_buf(data_dir.to_path_buf()).unwrap_or_default(),
-        output_db_path: camino::Utf8PathBuf::from_path_buf(db_path.to_path_buf())
-            .unwrap_or_default(),
-        table_name_mode: args.table_name_mode.unwrap_or_default(),
-        skip_foreign_key_check: args.skip_foreign_key_check,
-        ..core_options::ConvertOptions::default()
-    };
-
     sqlite_validate::enable_foreign_keys_for_validation(&connection)
         .context("failed to enable SQLite foreign-key enforcement before validation")?;
-    let report = sqlite_validate::validate_database(&connection, &schema, &options)?;
-    print_validation_report(&report);
-    if !report.is_success() {
+
+    let integrity_check = sqlite_validate::run_integrity_check(&connection)?;
+    let foreign_key_violations = if skip_foreign_key_check {
+        Vec::new()
+    } else {
+        sqlite_validate::run_foreign_key_check(&connection)?
+    };
+
+    print_database_only_validation_report(
+        db_path,
+        &integrity_check,
+        skip_foreign_key_check,
+        &foreign_key_violations,
+    );
+
+    if !integrity_check.success || !foreign_key_violations.is_empty() {
         bail!("validation failed");
     }
 
@@ -499,6 +526,36 @@ fn print_validation_report(report: &sqlite_validate::ValidationReport) {
         report.integrity_check.success,
         report.integrity_check.results.join("; ")
     );
+}
+
+fn print_database_only_validation_report(
+    db_path: &Path,
+    integrity_check: &sqlite_validate::IntegrityCheckReport,
+    foreign_key_check_skipped: bool,
+    foreign_key_violations: &[sqlite_validate::ForeignKeyViolation],
+) {
+    println!("database validation: {}", db_path.display());
+    println!(
+        "integrity check: success={}, results={}",
+        integrity_check.success,
+        integrity_check.results.join("; ")
+    );
+    if foreign_key_check_skipped {
+        println!("foreign key check: skipped");
+    } else if foreign_key_violations.is_empty() {
+        println!("foreign key check: success=true, violations=0");
+    } else {
+        println!(
+            "foreign key check: success=false, violations={}",
+            foreign_key_violations.len()
+        );
+        for violation in foreign_key_violations {
+            println!(
+                "foreign key violation: table={}, rowid={:?}, parent={}, fkid={}",
+                violation.table, violation.rowid, violation.parent, violation.fkid
+            );
+        }
+    }
 }
 
 fn validate_output_parent(path: Option<&Path>) -> Result<()> {
